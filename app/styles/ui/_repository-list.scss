@@ -6,6 +6,7 @@
  */
 #repository-list-resizable {
   height: 100%;
+  container: repository-list / inline-size;
 }
 
 .repository-list {
@@ -235,6 +236,25 @@
   }
   .repo-list-button.pull-repositories-spin .octicon {
     margin-right: var(--spacing-half);
+  }
+
+  // In narrow sidebars the buttons would leave the filter field too little
+  // room to show its text, so they move to a row of their own above it
+  @container repository-list (width < 250px) {
+    .filter-field-row {
+      flex-wrap: wrap;
+      row-gap: var(--spacing);
+
+      .filter-list-filter-field {
+        order: 1;
+        flex-basis: 100%;
+        margin-right: 0;
+      }
+
+      .button-component {
+        flex: 1;
+      }
+    }
   }
 
   .no-items {
