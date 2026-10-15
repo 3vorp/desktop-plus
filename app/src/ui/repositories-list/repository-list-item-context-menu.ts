@@ -346,7 +346,7 @@ const buildGroupNameMenuItems = (
 
   return [
     {
-      label: __DARWIN__ ? 'Assign to Group' : 'Assign to group',
+      label: __DARWIN__ ? 'Move to Group' : 'Move to group',
       submenu,
     },
   ]
