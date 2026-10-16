@@ -1,6 +1,6 @@
-Desktop Plus v3.6.7-beta3
+Desktop Plus v3.6.7
 
-Upstream: [GitHub Desktop 3.6.7-beta3 release notes](https://github.com/desktop/desktop/releases/tag/release-3.6.7-beta3)
+Upstream: [GitHub Desktop 3.6.7 release notes](https://github.com/desktop/desktop/releases/tag/release-3.6.7)
 
 ## Changes and improvements:
 
@@ -17,3 +17,7 @@ Upstream: [GitHub Desktop 3.6.7-beta3 release notes](https://github.com/desktop/
 ## Fixes:
 
 - [#285] Fixed an issue where the commit list could remain filtered after the searchbox was cleared, causing the results to be incorrectly filtered.
+
+- [#290] Fixed the layout of the "Let's get started" page being too big on certain screen aspect ratios.
+
+- [#291] Fixed commit message generation when using a BYOK model named `auto`.
