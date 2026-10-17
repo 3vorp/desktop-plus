@@ -161,6 +161,61 @@ describe('OAuth token requests', () => {
     })
   }
 
+  it('sends the PKCE code verifier with the authorization code', async t => {
+    t.mock.timers.enable({ apis: ['Date'], now: issuedAt })
+    const fetchMock = t.mock.method(
+      globalThis,
+      'fetch',
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        assert.ok(init)
+        assert.strictEqual(init.redirect, 'error')
+        assert.ok(typeof init.body === 'string')
+        assert.deepStrictEqual(JSON.parse(init.body), {
+          client_id: '',
+          client_secret: '',
+          code: 'browser-code',
+          code_verifier: 'pkce-verifier',
+        })
+        return Response.json(tokenResponse)
+      }
+    )
+    assert.deepStrictEqual(
+      await exchangeOAuthToken(
+        'https://github.com',
+        'browser-code',
+        'pkce-verifier'
+      ),
+      parseOAuthToken(tokenResponse, issuedAt)
+    )
+    assert.strictEqual(fetchMock.mock.callCount(), 1)
+  })
+
+  it('omits the PKCE code verifier when none is given', async t => {
+    const fetchMock = t.mock.method(
+      globalThis,
+      'fetch',
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        assert.ok(typeof init?.body === 'string')
+        assert.ok(!('code_verifier' in JSON.parse(init.body)))
+        return Response.json(tokenResponse)
+      }
+    )
+    await exchangeOAuthToken('https://github.com', 'browser-code')
+    assert.strictEqual(fetchMock.mock.callCount(), 1)
+  })
+
+  it('does not expose the PKCE code verifier in exchange errors', async t => {
+    t.mock.method(globalThis, 'fetch', async () =>
+      Response.json({ error: 'bad_verification_code' }, { status: 400 })
+    )
+    await assert.rejects(
+      exchangeOAuthToken('https://github.com', 'browser-code', 'pkce-verifier'),
+      (e: Error) =>
+        e.message === 'The OAuth token request failed.' &&
+        !String(e.stack).includes('pkce-verifier')
+    )
+  })
+
   it('uses the refresh grant and returns both replacement tokens', async t => {
     t.mock.timers.enable({ apis: ['Date'], now: issuedAt })
     const fetchMock = t.mock.method(

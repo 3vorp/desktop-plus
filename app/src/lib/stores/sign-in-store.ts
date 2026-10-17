@@ -11,8 +11,8 @@ import {
   fetchUser,
   getDotComAPIEndpoint,
   getEnterpriseAPIURL,
-  requestOAuthToken,
   getOAuthAuthorizationURL,
+  getHTMLURL,
   BitbucketCloudAPIEndpoint,
   getBitbucketOAuthAuthorizationURL,
   requestOAuthTokenBitbucket,
@@ -42,6 +42,7 @@ import noop from 'lodash/noop'
 import { AccountsStore } from './accounts-store'
 import { RepoType } from '../../models/github-repository'
 import { isGHES } from '../endpoint-capabilities'
+import { exchangeOAuthToken, IOAuthToken } from '../oauth-token'
 
 /**
  * An enumeration of the possible steps that the sign in
@@ -389,6 +390,7 @@ export type SignInResult =
  */
 export class SignInStore extends TypedBaseStore<SignInState | null> {
   private state: SignInState | null = null
+  private resolvingOAuthState: string | undefined
 
   private accounts: ReadonlyArray<Account> = []
 
@@ -540,7 +542,10 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
       )
     })
       .then(account => {
-        if (!this.state || this.state.kind !== SignInStep.Authentication) {
+        if (
+          this.state?.kind !== SignInStep.Authentication ||
+          this.state.oauthState?.state !== csrfToken
+        ) {
           // Looks like the sign in flow has been aborted
           log.warn('[SignInStore] account resolved but session has changed')
           return
@@ -605,41 +610,102 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
       return
     }
 
-    const { endpoint, apiType } = this.state
-    const tokenData = await this.getOauthTokenData(
-      this.state.oauthState.oauthProvider,
-      endpoint,
-      action.code,
-      this.state.oauthState.codeVerifier
-    )
-
-    if (tokenData) {
-      const [token, refreshToken, expiresAt] = tokenData
+    const { endpoint, apiType, oauthState } = this.state
+    if (this.resolvingOAuthState === oauthState.state) {
+      return
+    }
+    this.resolvingOAuthState = oauthState.state
+    // False once the user cancels, restarts, or leaves this browser sign-in.
+    const isSignInAttemptActive = () =>
+      this.state?.kind === SignInStep.Authentication &&
+      this.state.oauthState === oauthState
+    const isGitHub = oauthState.oauthProvider === 'github'
+    let unpublishedToken: string | undefined
+    try {
+      const credential = await this.exchangeOAuthCode(
+        oauthState.oauthProvider,
+        endpoint,
+        action.code,
+        oauthState.codeVerifier
+      )
+      // Revocation uses GitHub's OAuth app endpoint, so it only applies there.
+      unpublishedToken = isGitHub ? credential.accessToken : undefined
+      if (!isSignInAttemptActive()) {
+        return
+      }
       const account = await fetchUser(
         endpoint,
         apiType,
-        token,
-        refreshToken,
-        expiresAt,
-        UnknownLogin.InitialAuthFetch
+        credential.accessToken,
+        credential.refreshToken ?? '',
+        credential.expiresAt ?? 0,
+        UnknownLogin.InitialAuthFetch,
+        true
       )
-      this.state.oauthState.onAuthCompleted(account)
-    } else {
-      this.state.oauthState.onAuthError(
-        new Error('Failed retrieving authenticated user')
+      if (!isSignInAttemptActive()) {
+        return
+      }
+      // Third-party providers still renew their tokens in their API clients
+      // (see Account.refreshToken), not through GitHub's credential sessions.
+      const stored = await this.accountStore.addAccount(
+        account,
+        isGitHub ? credential : undefined
       )
+      if (stored !== null) {
+        unpublishedToken = undefined
+      }
+      if (!isSignInAttemptActive()) {
+        return
+      }
+      if (stored === null) {
+        throw new Error(
+          'Unable to save your credentials. Please try signing in again.'
+        )
+      }
+      oauthState.onAuthCompleted(stored)
+    } catch (e) {
+      oauthState.onAuthError(e)
+    } finally {
+      if (this.resolvingOAuthState === oauthState.state) {
+        this.resolvingOAuthState = undefined
+      }
+      if (unpublishedToken !== undefined) {
+        void this.accountStore.revokeUnusedToken({
+          endpoint,
+          token: unpublishedToken,
+        })
+      }
     }
   }
 
-  private async getOauthTokenData(
+  private async exchangeOAuthCode(
     oauthProvider: OAuthProvider,
     endpoint: string,
     code: string,
     codeVerifier: string
+  ): Promise<IOAuthToken> {
+    if (oauthProvider === 'github') {
+      return exchangeOAuthToken(getHTMLURL(endpoint), code, codeVerifier)
+    }
+
+    const tokenData = await this.getOauthTokenData(
+      oauthProvider,
+      code,
+      codeVerifier
+    )
+    if (tokenData === null) {
+      throw new Error('Failed retrieving authenticated user')
+    }
+    const [accessToken, refreshToken, expiresAt] = tokenData
+    return { accessToken, refreshToken, expiresAt }
+  }
+
+  private async getOauthTokenData(
+    oauthProvider: Exclude<OAuthProvider, 'github'>,
+    code: string,
+    codeVerifier: string
   ) {
     switch (oauthProvider) {
-      case 'github':
-        return await requestOAuthToken(endpoint, code, codeVerifier)
       case 'bitbucket':
         return await requestOAuthTokenBitbucket(code, codeVerifier)
       case 'gitlab':
@@ -925,7 +991,24 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
       return
     }
 
-    this.emitAuthenticate(account)
+    const stored = await this.accountStore.addAccount(account)
+    if (this.state !== loadingState) {
+      log.warn('[SignInStore] account saved but session has changed')
+      return
+    }
+
+    if (stored === null) {
+      this.setState({
+        ...currentState,
+        loading: false,
+        error: new Error(
+          'Unable to save your credentials. Please try signing in again.'
+        ),
+      })
+      return
+    }
+
+    this.emitAuthenticate(stored)
     this.setState({ kind: SignInStep.Success, resultCallback })
   }
 }

@@ -1472,12 +1472,6 @@ export interface IAPIComment {
   readonly created_at: string
 }
 
-/** The server response when handling the OAuth callback (with code) to obtain an access token */
-interface IAPIAccessToken {
-  readonly access_token: string
-  readonly scope: string
-  readonly token_type: string
-}
 interface IBitbucketAPIAccessToken {
   readonly access_token: string
   readonly token_type: string
@@ -1758,8 +1752,8 @@ export class API {
     copilotEndpoint?: string,
     /**
      * Use the account store to resolve/refresh tokens and handle rejected tokens.
-     * Disable for the anonymous public-repository fallback: it must use the
-     * supplied token, not another signed-in account's token.
+     * Disable for new sign-in tokens and the anonymous public-repository fallback:
+     * those must use the supplied token, not another signed-in account's token.
      */
     private readonly manageAccountToken = true
   ) {
@@ -3298,7 +3292,8 @@ export async function fetchUser(
   token: string,
   refreshToken: string,
   expiresAt: number,
-  login: string | UnknownLogin
+  login: string | UnknownLogin,
+  isNewAuthorization = false
 ): Promise<Account> {
   const api = instantiateAPI(
     apiType,
@@ -3307,7 +3302,8 @@ export async function fetchUser(
     login,
     refreshToken,
     expiresAt,
-    undefined
+    undefined,
+    !isNewAuthorization
   )
   try {
     const [user, emails, copilotInfo, features] = await Promise.all([
@@ -3616,35 +3612,6 @@ export function getGiteaOAuthAuthorizationURL(
   const encodedRedirectUri = encodeURIComponent(oauthRedirectUri)
   const pkceParams = pkceChallengeParams(codeChallenge)
   return `${GiteaCloudURL}/login/oauth/authorize?client_id=${ClientIDGitea}&redirect_uri=${encodedRedirectUri}&response_type=code&scope=${scope}&state=${state}&${pkceParams}`
-}
-
-export async function requestOAuthToken(
-  endpoint: string,
-  code: string,
-  codeVerifier: string
-): Promise<[string, string, number] | null> {
-  try {
-    const urlBase = getHTMLURL(endpoint)
-    const response = await request(
-      urlBase,
-      null,
-      'POST',
-      'login/oauth/access_token',
-      {
-        client_id: ClientID,
-        client_secret: ClientSecret,
-        code: code,
-        code_verifier: codeVerifier,
-      }
-    )
-    tryUpdateEndpointVersionFromResponse(endpoint, response)
-
-    const result = await parsedResponse<IAPIAccessToken>(response)
-    return [result.access_token, '', 0]
-  } catch (e) {
-    log.warn(`requestOAuthToken: failed with endpoint ${endpoint}`, e)
-    return null
-  }
 }
 
 export async function requestOAuthTokenBitbucket(

@@ -99,12 +99,20 @@ export function parseOAuthToken(value: unknown, issuedAt: number): IOAuthToken {
  * Exchange a browser authorization code for credentials.
  *
  * The endpoint must be the HTML endpoint, not the API endpoint.
+ * Pass the PKCE code verifier when the authorization request sent a challenge.
  */
 export async function exchangeOAuthToken(
   htmlEndpoint: string,
-  code: string
+  code: string,
+  codeVerifier?: string
 ): Promise<IOAuthToken> {
-  return requestOAuthToken(htmlEndpoint, { code }, false)
+  return requestOAuthToken(
+    htmlEndpoint,
+    codeVerifier === undefined
+      ? { code }
+      : { code, code_verifier: codeVerifier },
+    false
+  )
 }
 
 /**
