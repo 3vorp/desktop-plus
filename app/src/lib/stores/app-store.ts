@@ -9559,14 +9559,13 @@ export class AppStore extends TypedBaseStore<IAppState> {
     log.info(
       `[AppStore] removing account ${account.login} (${account.name}) from store`
     )
-    const hasRefreshToken = this.accountsStore.isRefreshable(account)
     const current = await this.accountsStore.removeAccount(account)
     await this.repositoriesStore.clearGitHubRepositoryLoginForEndpointAndLogin(
       account.endpoint,
       account.login
     )
     if (current?.token) {
-      await revokeAccountToken({ ...current, hasRefreshToken })
+      await revokeAccountToken(current, AbortSignal.timeout(30_000))
     }
   }
 

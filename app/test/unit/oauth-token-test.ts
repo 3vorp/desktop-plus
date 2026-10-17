@@ -8,6 +8,8 @@ import {
   parseOAuthToken,
   refreshOAuthToken,
 } from '../../src/lib/oauth-token'
+import { renewAccountToken } from '../../src/lib/third-party-oauth-token'
+import { GitLabCloudAPIEndpoint } from '../../src/lib/api'
 
 const issuedAt = 1_700_000_000_000
 const tokenResponse = {
@@ -386,6 +388,21 @@ describe('OAuth token requests', () => {
       name: 'Error',
       message: 'The OAuth token request failed.',
     })
+  })
+
+  it('treats a non-JSON third-party refresh response as temporary', async t => {
+    t.mock.method(
+      globalThis,
+      'fetch',
+      async () => new Response('<html>Proxy sign-in</html>')
+    )
+    await assert.rejects(
+      renewAccountToken('', 'refresh', {
+        apiType: 'gitlab',
+        endpoint: GitLabCloudAPIEndpoint,
+      }),
+      { name: 'Error', message: 'The OAuth token request failed.' }
+    )
   })
 
   it('sanitizes network failures without retrying', async t => {

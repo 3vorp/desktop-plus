@@ -76,7 +76,6 @@ describe('OAuth API integration', () => {
     assert.deepStrictEqual(invalidated.mock.calls[0].arguments, [
       endpoint,
       'current-token',
-      'octocat',
     ])
   })
 

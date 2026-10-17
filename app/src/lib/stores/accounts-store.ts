@@ -34,21 +34,20 @@ import {
   RevocableToken,
 } from '../third-party-oauth-token'
 import { IOAuthToken } from '../oauth-token'
-import {
-  AccountCredential,
-  deserializeAccountCredential,
-} from '../account-credential'
+import { deserializeAccountCredential } from '../account-credential'
 import {
   AccountRequiresSignInError,
   CredentialSessions,
-  getDefaultRenewalTiming,
   refreshMargin,
 } from '../credential-sessions'
 import { ChunkedSecureStore } from './chunked-secure-store'
 import {
   getPersistedUserKey,
   hasLegacyCredentialFields,
+  ILegacyCredentialFields,
   migrateLegacyCredential,
+  parsePersistedUsers,
+  PersistedUsers,
   withPersistedUsers,
 } from './legacy-account-credential'
 
@@ -65,9 +64,6 @@ const sortAccounts = (accounts: ReadonlyArray<Account>) =>
         ) || compare(xIx, yIx)
     )
     .map(([account]) => account)
-
-const getSignInKey = (account: Account) =>
-  `${account.endpoint}:${account.login}`
 
 const isSameSignIn = (x: Account, y: Account) =>
   x.endpoint === y.endpoint && x.login === y.login
@@ -110,14 +106,10 @@ function isMissingSecretServiceError(e: unknown) {
 }
 
 /** The data-only interface for storage. */
-interface IAccount {
+interface IAccount extends ILegacyCredentialFields {
   readonly token: string
   readonly login: string
   readonly endpoint: string
-  /** Legacy, only read to migrate it to secure storage. */
-  readonly refreshToken?: unknown
-  /** Legacy, only read to migrate it to secure storage. */
-  readonly tokenExpiresAt?: unknown
   readonly emails: ReadonlyArray<IEmail>
   readonly avatarURL: string
   readonly id: number
@@ -177,7 +169,11 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
   private readonly credentials: CredentialSessions
   /** Sign-in keys whose legacy refresh token could not be saved securely yet. */
   private readonly pendingLegacyCredentials = new Set<string>()
-  private readonly unloadedUsers = new Map<string, string>()
+  /**
+   * Persisted `users` keys this window wrote for its own accounts. Other
+   * entries were written by other app windows and are kept.
+   */
+  private ownUserKeys = new Set<string>()
 
   /** A promise that will resolve when the accounts have been loaded. */
   private loadingPromise: Promise<void>
@@ -187,8 +183,7 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     secureStore: ISecureStore,
     renewToken = renewAccountToken,
     now = Date.now,
-    revokeToken = revokeAccountToken,
-    timing = getDefaultRenewalTiming()
+    revokeToken = revokeAccountToken
   ) {
     super()
     secureStore = new ChunkedSecureStore(secureStore)
@@ -201,12 +196,11 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
         requireSignIn: this.requireSignIn,
         onTokenRenewed: this.onTokenRenewed,
         onSignedIn: this.onSignedIn,
-        onRemovedElsewhere: account => this.retireAccount(account),
+        onRemovedElsewhere: this.onRemovedElsewhere,
       },
       renewToken,
       now,
-      revokeToken,
-      timing
+      revokeToken
     )
     this.loadingPromise = this.loadFromStore()
   }
@@ -228,17 +222,12 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
   /** Handle a rejected API token without leaving unhandled callback errors. */
   public handleTokenInvalidated = (endpoint: string, token: string): void => {
     void this.invalidateToken(endpoint, token).catch(error => {
-      log.error('Unable to invalidate rejected credentials', error)
+      log.error('Unable to invalidate rejected GitHub credentials', error)
       this.emitError(error)
     })
   }
 
-  /**
-   * Resolve token snapshots held by long-lived clients without changing identity.
-   *
-   * The login identifies which account an empty token belongs to when several
-   * accounts are signed in to the endpoint.
-   */
+  /** Resolve token snapshots held by long-lived clients without changing identity. */
   public resolveToken = async (
     endpoint: string,
     token: string,
@@ -270,10 +259,8 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
    * Get the account's credential for `holder`, holding off renewal of that
    * token until the lease is released. See `CredentialSessions.leaseToken`.
    *
-   * Leases only hold off renewal in this app window. Another window never
-   * waits for them, so it can renew, and thereby revoke, a token that a Git
-   * process started from this window still uses once that token is close to
-   * expiring.
+   * Leases only hold off renewal in this window; another window may still
+   * renew, and so revoke, a leased token near expiry.
    */
   public async leaseAccountToken(
     account: Account,
@@ -347,7 +334,9 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     accessToken: string,
     login: string
   ) => {
-    this.pendingLegacyCredentials.delete(`${endpoint}:${login}`)
+    this.pendingLegacyCredentials.delete(
+      getPersistedUserKey({ endpoint, login })
+    )
     this.accounts = this.accounts.map(a =>
       a.endpoint === endpoint && a.login === login
         ? this.credentials.inheritSession(a, a.withToken(accessToken))
@@ -356,13 +345,27 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     this.save()
   }
 
+  private onRemovedElsewhere = (account: Account): boolean => {
+    const persisted = parsePersistedUsers(this.dataStore.getItem('users'))
+    if (
+      persisted === undefined ||
+      persisted.has(getPersistedUserKey(account))
+    ) {
+      return false
+    }
+    this.retireAccount(account)
+    return true
+  }
+
   private onSignedIn = (account: Account) => {
     const accountsByKey = this.accounts.reduce(
-      (map, x) => map.set(getSignInKey(x), x),
+      (map, x) => map.set(getPersistedUserKey(x), x),
       new Map<string, Account>()
     )
-    accountsByKey.set(getSignInKey(account), account)
-    this.pendingLegacyCredentials.delete(getSignInKey(account))
+    accountsByKey.set(getPersistedUserKey(account), account)
+    this.pendingLegacyCredentials.delete(getPersistedUserKey(account))
+    // Even if another window removed this account, the new sign-in is kept.
+    this.ownUserKeys.delete(getPersistedUserKey(account))
 
     this.accounts = sortAccounts([...accountsByKey.values()])
     this.save()
@@ -535,9 +538,21 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     await this.loadingPromise
     const current = this.retireAccount(account)
     if (current !== null) {
+      await this.revokeNewerStoredCredential(current)
       await this.deleteStoredAccount(current)
     }
     return current
+  }
+
+  /**
+   * Another window may have renewed the pair since this window's snapshot,
+   * which the caller revokes; revoke the newer token too.
+   */
+  private async revokeNewerStoredCredential(account: Account) {
+    const stored = await this.credentials.readStoredCredential(account)
+    if (stored && stored.accessToken !== account.token) {
+      void this.revokeUnusedToken(account.withToken(stored.accessToken))
+    }
   }
 
   private getMigratedGHEAccounts(
@@ -573,6 +588,7 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     }
 
     const parsedAccounts: ReadonlyArray<IAccount> = JSON.parse(raw)
+    this.ownUserKeys = new Set(parsedAccounts.map(getPersistedUserKey))
     const migratedAccounts = this.getMigratedGHEAccounts(parsedAccounts)
     const rawAccounts = migratedAccounts ?? parsedAccounts
 
@@ -600,14 +616,17 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
       const key = getKeyForAccount(accountWithoutToken)
       try {
         const stored = await this.secureStore.getItem(key, account.login)
-        const credential = await this.restoreLegacyCredential(
+        const { credential, pending } = await migrateLegacyCredential(
+          this.secureStore,
+          key,
           accountWithoutToken,
           account,
-          stored,
           deserializeAccountCredential(stored)
         )
-        if (credential === undefined) {
-          continue
+        if (pending) {
+          this.pendingLegacyCredentials.add(
+            getPersistedUserKey(accountWithoutToken)
+          )
         }
         if (credential === null && stored !== null) {
           removedInvalidAccounts = true
@@ -622,18 +641,12 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
         const loaded = accountWithoutToken.withToken(
           credential?.accessToken ?? ''
         )
-        const restored = this.credentials.restore(
-          loaded,
-          credential,
-          credential !== null
-        )
-        accountsByKey.set(getSignInKey(restored), restored)
+        const restored = this.credentials.restore(loaded, credential)
+        accountsByKey.set(getPersistedUserKey(restored), restored)
       } catch (e) {
         log.error(`Error getting token for '${key}'. Skipping.`, e)
-        this.unloadedUsers.set(
-          getPersistedUserKey(parsedAccounts[index]),
-          getPersistedUserKey(account)
-        )
+        // Kept like another window's entry, so it loads again later.
+        this.ownUserKeys.delete(getPersistedUserKey(parsedAccounts[index]))
 
         this.emitError(e)
       }
@@ -653,28 +666,24 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     }
   }
 
-  /** Returns undefined if another app window removed the account meanwhile. */
-  private async restoreLegacyCredential(
-    account: Account,
-    persisted: IAccount,
-    stored: string | null,
-    credential: AccountCredential
-  ): Promise<AccountCredential | undefined> {
-    const migration = await migrateLegacyCredential(
-      this.secureStore,
-      getKeyForAccount(account),
-      account,
-      persisted,
-      stored,
-      credential
-    )
-    if (migration.pending) {
-      this.pendingLegacyCredentials.add(getSignInKey(account))
+  /** This window's accounts that are gone from `persisted` were removed elsewhere. */
+  private forgetAccountsRemovedElsewhere(
+    persisted: PersistedUsers | undefined
+  ) {
+    const isRemoved = (a: Account) =>
+      persisted !== undefined &&
+      this.ownUserKeys.has(getPersistedUserKey(a)) &&
+      !persisted.has(getPersistedUserKey(a))
+    for (const account of this.accounts.filter(isRemoved)) {
+      log.info(`Account '${account.login}' was removed in another window.`)
+      this.credentials.retire(account.endpoint, account.login)
     }
-    return migration.removed ? undefined : migration.credential
+    this.accounts = this.accounts.filter(a => !isRemoved(a))
   }
 
   private save() {
+    const persisted = parsePersistedUsers(this.dataStore.getItem('users'))
+    this.forgetAccountsRemovedElsewhere(persisted)
     const usersWithoutTokens = this.accounts.map(account =>
       account.withToken('')
     )
@@ -683,12 +692,13 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
       JSON.stringify(
         withPersistedUsers(
           usersWithoutTokens,
-          this.dataStore.getItem('users'),
-          a => this.pendingLegacyCredentials.has(getSignInKey(a)),
-          this.unloadedUsers
+          persisted,
+          a => this.pendingLegacyCredentials.has(getPersistedUserKey(a)),
+          this.ownUserKeys
         )
       )
     )
+    this.ownUserKeys = new Set(usersWithoutTokens.map(getPersistedUserKey))
 
     this.emitUpdate(this.accounts)
   }

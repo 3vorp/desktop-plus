@@ -1,7 +1,6 @@
 import { Account } from '../../models/account'
 import {
   AccountCredential,
-  deserializeAccountCredential,
   serializeAccountCredential,
 } from '../account-credential'
 import { IOAuthToken, isToken } from '../oauth-token'
@@ -19,22 +18,17 @@ export function hasLegacyCredentialFields(fields: object) {
   return 'refreshToken' in fields || 'tokenExpiresAt' in fields
 }
 
-export interface ILegacyCredentialMigration {
-  readonly credential: AccountCredential
-  /** Keep the legacy fields so the migration is retried on the next launch. */
-  readonly pending: boolean
-  /** Another app window removed the account while this one was loading. */
-  readonly removed?: boolean
-}
-
 export async function migrateLegacyCredential(
   secureStore: ISecureStore,
   key: string,
   account: Account,
   legacy: ILegacyCredentialFields,
-  stored: string | null,
   credential: AccountCredential
-): Promise<ILegacyCredentialMigration> {
+): Promise<{
+  readonly credential: AccountCredential
+  /** Keep the legacy fields so the migration is retried on the next launch. */
+  readonly pending: boolean
+}> {
   const { refreshToken, tokenExpiresAt } = legacy
   // Versioned credentials already hold their refresh token, and GitHub
   // accounts and personal access tokens never had one.
@@ -47,8 +41,7 @@ export async function migrateLegacyCredential(
     return { credential, pending: false }
   }
 
-  // An unknown expiry renews the pair the first time it is used. The stored
-  // expiry is up to 10% earlier than the real one, which is harmless.
+  // An unknown expiry renews the pair the first time it is used.
   const migrated: IOAuthToken = {
     accessToken: credential.accessToken,
     refreshToken,
@@ -60,17 +53,6 @@ export async function migrateLegacyCredential(
   }
 
   try {
-    // Another app window may have migrated, rotated or removed it since.
-    const current = await secureStore.getItem(key, account.login)
-    if (current === null) {
-      return { credential: null, pending: false, removed: true }
-    }
-    if (current !== stored) {
-      const latest = deserializeAccountCredential(current)
-      return latest === null
-        ? { credential: migrated, pending: true }
-        : { credential: latest, pending: false }
-    }
     await secureStore.setItem(
       key,
       account.login,
@@ -88,45 +70,43 @@ export const getPersistedUserKey = (user: {
   readonly login: unknown
 }) => `${user.endpoint}:${user.login}`
 
+export type PersistedUsers = ReadonlyMap<string, Record<string, unknown>>
+
+/** Returns undefined if there are no persisted `users` or they cannot be read. */
+export function parsePersistedUsers(
+  persisted: string | null
+): PersistedUsers | undefined {
+  let parsed: unknown
+  try {
+    parsed = persisted === null ? undefined : JSON.parse(persisted)
+  } catch {
+    return undefined
+  }
+  if (!Array.isArray(parsed)) {
+    return undefined
+  }
+  const users = new Map<string, Record<string, unknown>>()
+  for (const entry of parsed) {
+    if (typeof entry === 'object' && entry !== null) {
+      users.set(getPersistedUserKey(entry), entry)
+    }
+  }
+  return users
+}
+
 /**
  * Pending migrations keep their legacy fields so they can be retried, and
- * entries that could not be loaded (e.g. secure storage was locked) are kept
- * unchanged so they load again later.
- *
- * `unloaded` maps persisted keys to the keys they load as, which differ when
- * loading migrates the endpoint.
+ * entries not in `ownKeys` were written by other app windows and are kept.
  */
 export function withPersistedUsers(
   users: ReadonlyArray<Account>,
-  persisted: string | null,
+  persisted: PersistedUsers | undefined,
   isPending: (account: Account) => boolean,
-  unloaded: Map<string, string>
+  ownKeys: ReadonlySet<string>
 ): ReadonlyArray<object> {
-  const loaded = new Set(users.map(getPersistedUserKey))
-  for (const [persistedKey, loadedKey] of unloaded) {
-    if (loaded.has(persistedKey) || loaded.has(loadedKey)) {
-      unloaded.delete(persistedKey)
-    }
-  }
-  if (!users.some(isPending) && unloaded.size === 0) {
-    return users
-  }
-  let parsed: unknown
-  try {
-    parsed = persisted === null ? [] : JSON.parse(persisted)
-  } catch {
-    parsed = []
-  }
-  const persistedUsers = new Map<string, Record<string, unknown>>()
-  for (const entry of Array.isArray(parsed) ? parsed : []) {
-    if (typeof entry === 'object' && entry !== null) {
-      persistedUsers.set(getPersistedUserKey(entry), entry)
-    }
-  }
-
   const saved: Array<object> = users.map(user => {
     const legacy = isPending(user)
-      ? persistedUsers.get(getPersistedUserKey(user))
+      ? persisted?.get(getPersistedUserKey(user))
       : undefined
     return legacy === undefined
       ? user
@@ -136,12 +116,9 @@ export function withPersistedUsers(
           tokenExpiresAt: legacy.tokenExpiresAt,
         }
   })
-  for (const [persistedKey, loadedKey] of [...unloaded]) {
-    const entry =
-      persistedUsers.get(persistedKey) ?? persistedUsers.get(loadedKey)
-    if (entry === undefined) {
-      unloaded.delete(persistedKey)
-    } else {
+  const keys = new Set(users.map(getPersistedUserKey))
+  for (const [key, entry] of persisted ?? []) {
+    if (!keys.has(key) && !ownKeys.has(key)) {
       saved.push(entry)
     }
   }

@@ -19,6 +19,7 @@ export function createAuthenticatedImageTokenResolver(
 ) {
   let nextRequestId = 0
   const pending = new Map<number, IPendingImageTokenRequest>()
+  const watchedSenders = new WeakSet<WebContents>()
 
   return {
     resolveToken: (endpoint: string, token: string): Promise<string> => {
@@ -29,6 +30,17 @@ export function createAuthenticatedImageTokenResolver(
         !isTrustedIPCSender(sender)
       ) {
         return Promise.reject(new Error('Image authentication unavailable'))
+      }
+      if (!watchedSenders.has(sender)) {
+        watchedSenders.add(sender)
+        // Another window may take over, but this one will never reply.
+        sender.on('destroyed', () => {
+          for (const request of pending.values()) {
+            if (request.sender === sender) {
+              request.finish(null)
+            }
+          }
+        })
       }
 
       return new Promise((resolve, reject) => {

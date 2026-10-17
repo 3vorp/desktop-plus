@@ -1621,11 +1621,7 @@ interface IAPIAliveWebSocket {
   readonly url: string
 }
 
-type TokenInvalidatedCallback = (
-  endpoint: string,
-  token: string,
-  login: string | UnknownLogin
-) => void
+type TokenInvalidatedCallback = (endpoint: string, token: string) => void
 
 export interface IAPICreatePushProtectionBypassResponse {
   reason: BypassReasonType
@@ -1676,13 +1672,9 @@ export class API {
     return () => this.tokenInvalidatedListeners.delete(callback)
   }
 
-  protected static emitTokenInvalidated(
-    endpoint: string,
-    token: string,
-    login: string | UnknownLogin
-  ) {
+  private static emitTokenInvalidated(endpoint: string, token: string) {
     this.tokenInvalidatedListeners.forEach(callback =>
-      callback(endpoint, token, login)
+      callback(endpoint, token)
     )
   }
 
@@ -1721,10 +1713,6 @@ export class API {
     this.token = token
     this.login = login
     this.copilotEndpoint = copilotEndpoint
-  }
-
-  public getToken() {
-    return this.token
   }
 
   protected get maxPerPage() {
@@ -2789,30 +2777,30 @@ export class API {
       token
     )
 
-    this.checkTokenInvalidated(response, token)
+    // Only consider invalid token when the status is 401 and the response has
+    // the X-GitHub-Request-Id header, meaning it comes from GH(E) and not from
+    // any kind of proxy/gateway. For more info see #12943
+    // We're also not considering a token has been invalidated when the reason
+    // behind a 401 is the fact that any kind of 2 factor auth is required.
+    if (
+      this.manageAccountToken &&
+      response.status === HttpStatusCode.Unauthorized &&
+      response.headers.has('X-GitHub-Request-Id') &&
+      !response.headers.has('X-GitHub-OTP')
+    ) {
+      API.emitTokenInvalidated(this.endpoint, token)
+    }
+    if (this.manageAccountToken && this.isThirdPartyTokenRejected(response)) {
+      API.emitTokenInvalidated(this.endpoint, token)
+    }
 
     tryUpdateEndpointVersionFromResponse(this.endpoint, response)
 
     return response
   }
 
-  private checkTokenInvalidated(response: Response, token: string) {
-    if (this.manageAccountToken && this.isTokenRejected(response)) {
-      API.emitTokenInvalidated(this.endpoint, token, this.login)
-    }
-  }
-
-  protected isTokenRejected(response: Response) {
-    // Only consider invalid token when the status is 401 and the response has
-    // the X-GitHub-Request-Id header, meaning it comes from GH(E) and not from
-    // any kind of proxy/gateway. For more info see #12943
-    // We're also not considering a token has been invalidated when the reason
-    // behind a 401 is the fact that any kind of 2 factor auth is required.
-    return (
-      response.status === HttpStatusCode.Unauthorized &&
-      response.headers.has('X-GitHub-Request-Id') &&
-      !response.headers.has('X-GitHub-OTP')
-    )
+  protected isThirdPartyTokenRejected(response: Response) {
+    return false
   }
 
   /**
@@ -3657,7 +3645,7 @@ export class BitbucketAPI extends API {
     return 'values'
   }
 
-  protected override isTokenRejected(response: Response) {
+  protected override isThirdPartyTokenRejected(response: Response) {
     return response.status === HttpStatusCode.Unauthorized
   }
 
@@ -3944,7 +3932,7 @@ export class GitLabAPI extends API {
     return ''
   }
 
-  protected override isTokenRejected(response: Response) {
+  protected override isThirdPartyTokenRejected(response: Response) {
     return response.status === HttpStatusCode.Unauthorized
   }
 
@@ -4259,7 +4247,7 @@ export class ForgejoAPI extends API {
     return ''
   }
 
-  protected override isTokenRejected(response: Response) {
+  protected override isThirdPartyTokenRejected(response: Response) {
     return response.status === HttpStatusCode.Unauthorized
   }
 

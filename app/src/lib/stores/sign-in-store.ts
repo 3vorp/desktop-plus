@@ -492,6 +492,19 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
     }
 
     this.setState({ ...currentState, loading: true })
+    const loadingState = this.state
+
+    const conflict = await this.accountStore.findApiTypeConflict(
+      currentState.endpoint,
+      currentState.apiType
+    )
+    if (this.state !== loadingState) {
+      return
+    }
+    if (conflict !== null) {
+      this.setState({ ...currentState, loading: false, error: conflict })
+      return
+    }
 
     if (currentState.kind === SignInStep.ExistingAccountWarning) {
       const { existingAccount } = currentState
@@ -661,7 +674,6 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
           endpoint,
           apiType,
           token: unpublished.accessToken,
-          hasRefreshToken: unpublished.refreshToken !== undefined,
         })
       }
     }

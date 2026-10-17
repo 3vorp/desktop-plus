@@ -5,15 +5,20 @@ import { ISecureStore } from './stores'
  * credential pair can be larger (Bitbucket tokens alone can exceed 2000
  * characters). Values over this size are split into several items.
  */
-export const maxSecureStoreItemBytes = 2048
+const maxItemBytes = 2048
 
 const pointerPrefix = 'desktop-plus-chunked:'
 const maxChunks = 64
 const maxReadAttempts = 3
 
+/**
+ * `desktop-plus-chunked:1:<generation>:<count>:<length>`. The generation is
+ * unique per write, so chunks of different writes are never combined.
+ */
+const pointerPattern =
+  /^desktop-plus-chunked:1:([0-9a-f-]{1,64}):(\d{1,2}):(\d{1,15})$/
+
 interface IChunkPointer {
-  readonly version: 1
-  /** Unique per write, so chunks of different writes are never combined. */
   readonly generation: string
   readonly count: number
   readonly length: number
@@ -24,10 +29,7 @@ interface IChunkPointer {
  * them, so readers see either the previous value or the new one in full.
  */
 export class ChunkedSecureStore implements ISecureStore {
-  public constructor(
-    private readonly store: ISecureStore,
-    private readonly maxItemBytes = maxSecureStoreItemBytes
-  ) {}
+  public constructor(private readonly store: ISecureStore) {}
 
   public async getItem(key: string, login: string): Promise<string | null> {
     for (let attempt = 0; attempt < maxReadAttempts; attempt++) {
@@ -53,7 +55,7 @@ export class ChunkedSecureStore implements ISecureStore {
   public async setItem(key: string, login: string, value: string) {
     const previous = await this.tryReadPointer(key, login)
     if (
-      Buffer.byteLength(value) <= this.maxItemBytes &&
+      Buffer.byteLength(value) <= maxItemBytes &&
       !value.startsWith(pointerPrefix)
     ) {
       await this.store.setItem(key, login, value)
@@ -63,12 +65,11 @@ export class ChunkedSecureStore implements ISecureStore {
       return
     }
 
-    const chunks = splitByBytes(value, this.maxItemBytes)
+    const chunks = splitByBytes(value, maxItemBytes)
     if (chunks.length > maxChunks) {
       throw new Error('The credentials are too large to store.')
     }
     const pointer: IChunkPointer = {
-      version: 1,
       generation: crypto.randomUUID(),
       count: chunks.length,
       length: value.length,
@@ -89,7 +90,11 @@ export class ChunkedSecureStore implements ISecureStore {
           throw write.reason
         }
       }
-      await this.store.setItem(key, login, serializePointer(pointer))
+      await this.store.setItem(
+        key,
+        login,
+        `${pointerPrefix}1:${pointer.generation}:${pointer.count}:${pointer.length}`
+      )
     } catch (e) {
       await this.deleteChunks(key, login, pointer)
       throw e
@@ -152,45 +157,18 @@ function range(count: number) {
   return Array.from({ length: count }, (_, i) => i)
 }
 
-function serializePointer(pointer: IChunkPointer) {
-  return pointerPrefix + JSON.stringify(pointer)
-}
-
 function parsePointer(value: string | null): IChunkPointer | undefined {
   if (value === null || !value.startsWith(pointerPrefix)) {
     return undefined
   }
-  try {
-    const pointer: unknown = JSON.parse(value.slice(pointerPrefix.length))
-    if (
-      typeof pointer === 'object' &&
-      pointer !== null &&
-      'version' in pointer &&
-      pointer.version === 1 &&
-      'generation' in pointer &&
-      typeof pointer.generation === 'string' &&
-      /^[0-9a-f-]{1,64}$/.test(pointer.generation) &&
-      'count' in pointer &&
-      Number.isSafeInteger(pointer.count) &&
-      typeof pointer.count === 'number' &&
-      pointer.count > 0 &&
-      pointer.count <= maxChunks &&
-      'length' in pointer &&
-      typeof pointer.length === 'number' &&
-      Number.isSafeInteger(pointer.length) &&
-      pointer.length > 0
-    ) {
-      return {
-        version: 1,
-        generation: pointer.generation,
-        count: pointer.count,
-        length: pointer.length,
-      }
-    }
-  } catch {
+  const match = pointerPattern.exec(value)
+  const count = Number(match?.[2])
+  const length = Number(match?.[3])
+  if (match === null || count < 1 || count > maxChunks || length < 1) {
     // Never include the secure-store contents in an exception.
+    throw new Error('Unable to read stored credentials. Please sign in again.')
   }
-  throw new Error('Unable to read stored credentials. Please sign in again.')
+  return { generation: match[1], count, length }
 }
 
 /** Split without breaking characters, so each chunk is valid UTF-8 on its own. */

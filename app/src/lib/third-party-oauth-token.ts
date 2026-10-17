@@ -168,23 +168,19 @@ function usedTokenFields(value: unknown): unknown {
     return value
   }
   const { access_token, refresh_token, expires_in } = value
-  const lifetime =
-    typeof expires_in === 'string' && /^\d+$/.test(expires_in)
-      ? Number(expires_in)
-      : expires_in
   return {
     access_token,
     ...(refresh_token === undefined || refresh_token === null
       ? {}
       : { refresh_token }),
     expires_in:
-      typeof lifetime === 'number' && Number.isFinite(lifetime) && lifetime >= 0
-        ? Math.min(Math.floor(lifetime), maxLifetimeSeconds)
+      typeof expires_in === 'number' && expires_in >= 0
+        ? Math.min(Math.floor(expires_in), maxLifetimeSeconds)
         : defaultLifetimeSeconds,
   }
 }
 
-/** Mirrors upstream's `requestOAuthToken`. */
+/** Third-party counterpart of `requestOAuthToken`. */
 async function requestThirdPartyOAuthToken(
   apiType: RegisteredApiType,
   parameters: Readonly<Record<string, string>>,
@@ -235,10 +231,8 @@ async function requestThirdPartyOAuthToken(
       try {
         value = await response.json()
       } catch {
-        if (!response.ok) {
-          throw new Error('The OAuth token request failed.')
-        }
-        throw new OAuthTokenResponseError()
+        // E.g. a proxy's page, which must not sign the user out.
+        throw new Error('The OAuth token request failed.')
       }
 
       if (response.status >= 500) {
@@ -281,10 +275,7 @@ async function requestThirdPartyOAuthToken(
   }
 }
 
-export type RevocableToken = Pick<Account, 'endpoint' | 'token' | 'apiType'> & {
-  /** Third-party tokens without one are personal access tokens, never revoked. */
-  readonly hasRefreshToken?: boolean
-}
+export type RevocableToken = Pick<Account, 'endpoint' | 'token' | 'apiType'>
 
 export async function revokeAccountToken(
   account: RevocableToken,
@@ -295,8 +286,7 @@ export async function revokeAccountToken(
     case 'enterprise':
       return deleteToken(account, signal)
     case 'gitlab':
-      return account.endpoint === GitLabCloudAPIEndpoint &&
-        account.hasRefreshToken === true
+      return account.endpoint === GitLabCloudAPIEndpoint
         ? revokeGitLabToken(account.token, signal)
         : true
     // No per-token revocation.

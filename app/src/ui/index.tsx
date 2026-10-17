@@ -7,10 +7,6 @@ import { App } from './app'
 import { API } from '../lib/api'
 import { installAuthenticatedImageTokenHandler } from '../lib/authenticated-image-token-handler'
 import {
-  createRenewalTiming,
-  installRenewalTiming,
-} from '../lib/credential-sessions'
-import {
   Dispatcher,
   externalEditorErrorHandler,
   openShellErrorHandler,
@@ -266,7 +262,6 @@ const statsStore = new StatsStore(
   new UiActivityMonitor()
 )
 
-installRenewalTiming(createRenewalTiming())
 const accountsStore = new AccountsStore(localStorage, TokenStore)
 API.setTokenProvider(accountsStore.resolveToken)
 API.onTokenInvalidated(accountsStore.handleTokenInvalidated)

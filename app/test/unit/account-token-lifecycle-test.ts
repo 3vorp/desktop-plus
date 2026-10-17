@@ -1447,7 +1447,7 @@ describe('Several accounts on one endpoint', () => {
     await store.addAccount(account, longLived(rotating))
     await store.addAccount(other, longLived(otherRotating))
     t.mock.method(API.prototype, 'fetchAccount', async function (this: API) {
-      return this.getToken() === account.token
+      return this['token'] === account.token
         ? { ...createMockAPIIdentity(), name: 'Updated Octocat' }
         : {
             ...createMockAPIIdentity({ id: 2, login: other.login }),
@@ -1545,5 +1545,168 @@ describe('Several accounts on one endpoint', () => {
       refreshTokenExpiresAt: undefined,
     })
     await expectUsable(store, second, second.token)
+  })
+})
+
+describe('Several app windows', () => {
+  const other = new Account(
+    'hubot',
+    account.endpoint,
+    'dotcom',
+    'other-access',
+    [],
+    '',
+    2,
+    'Hubot'
+  )
+  const third = new Account(
+    'monalisa',
+    account.endpoint,
+    'dotcom',
+    'third-access',
+    [],
+    '',
+    3,
+    'Mona'
+  )
+  const window = (data: InMemoryStore, secure: AsyncInMemoryStore) =>
+    new AccountsStore(
+      data,
+      secure,
+      async () => renewed,
+      () => now
+    )
+  const persistedLogins = (data: InMemoryStore) =>
+    JSON.parse(data.getItem('users') ?? '[]').map(
+      (user: { login: string }) => user.login
+    )
+
+  it("keeps other windows' sign-ins and forgets accounts they removed", async () => {
+    const { store: first, data, secure } = setup()
+    await first.addAccount(account)
+    const second = window(data, secure)
+    assert.deepEqual(await second.getAll(), [account])
+
+    await first.addAccount(other)
+    await first.removeAccount(account)
+    await second.addAccount(third)
+
+    assert.deepEqual(await second.getAll(), [third])
+    assert.deepEqual(persistedLogins(data), [third.login, other.login])
+    await assert.rejects(
+      second.getAccountWithFreshToken(account),
+      AccountRequiresSignInError
+    )
+  })
+
+  it('keeps an account whose credential is missing until its entry is gone', async () => {
+    let renewals = 0
+    const { store, data, secure } = setup(async () => {
+      renewals++
+      return renewed
+    })
+    await store.addAccount(account, rotating)
+    await secure.deleteItem(getKeyForAccount(account), account.login)
+
+    await assert.rejects(
+      store.getAccountWithFreshToken(account),
+      /Unlock your keychain/
+    )
+    assert.deepEqual(await store.getAll(), [account])
+
+    data.setItem('users', '[]')
+    await assert.rejects(
+      store.getAccountWithFreshToken(account),
+      AccountRequiresSignInError
+    )
+    assert.deepEqual(await store.getAll(), [])
+    assert.equal(renewals, 0)
+  })
+
+  it('revokes a pair another window renewed when removing the account', async () => {
+    const { store: first, data, secure, revoked } = setup()
+    await first.addAccount(account, rotating)
+    const second = window(data, secure)
+    const [loaded] = await second.getAll()
+    assert.equal(
+      (await second.getAccountWithFreshToken(loaded)).token,
+      renewed.accessToken
+    )
+
+    const removed = await first.removeAccount(account)
+    assert.equal(removed?.token, account.token)
+    assert.deepEqual(revoked, [renewed.accessToken])
+    assert.equal(
+      await secure.getItem(getKeyForAccount(account), account.login),
+      null
+    )
+  })
+
+  it('adopts a credential that could not be read while loading', async t => {
+    const { store: first, data, secure } = setup()
+    await first.addAccount(account)
+    const getItem = secure.getItem.bind(secure)
+    let locked = true
+    t.mock.method(secure, 'getItem', (key: string, login?: string) =>
+      locked ? Promise.resolve(null) : getItem(key, login)
+    )
+    const second = window(data, secure)
+    const [loaded] = await second.getAll()
+    assert.equal(loaded.token, '')
+    locked = false
+
+    assert.equal(
+      (await second.getAccountWithFreshToken(loaded)).token,
+      account.token
+    )
+    assert.deepEqual(await second.getAll(), [account])
+    await first.addAccount(other)
+    assert.deepEqual(persistedLogins(data), [account.login, other.login])
+  })
+
+  it('signs out a rejected token even if its credential is missing', async () => {
+    const { store, secure } = setup()
+    await store.addAccount(account)
+    await secure.deleteItem(getKeyForAccount(account), account.login)
+    const invalidated: Account[] = []
+    store.onTokenInvalidated(a => invalidated.push(a))
+
+    await store.invalidateToken(account.endpoint, account.token)
+
+    assert.equal(invalidated.length, 1)
+    assert.deepEqual(await store.getAll(), [])
+  })
+
+  it('keeps an entry that could not be loaded until it is signed in again', async t => {
+    const { store: first, data, secure } = setup()
+    await first.addAccount(account)
+    await first.addAccount(other)
+    const entryOf = (login: string) =>
+      JSON.parse(data.getItem('users') ?? '[]').find(
+        (user: { login: string }) => user.login === login
+      )
+    const entry = entryOf(other.login)
+    const getItem = secure.getItem.bind(secure)
+    const locked = t.mock.method(
+      secure,
+      'getItem',
+      (key: string, login?: string) =>
+        login === other.login
+          ? Promise.reject(new Error('Keychain locked'))
+          : getItem(key, login)
+    )
+    const second = window(data, secure)
+    assert.deepEqual(await second.getAll(), [account])
+
+    await second.addAccount(third)
+    assert.deepEqual(entryOf(other.login), entry)
+
+    locked.mock.restore()
+    await second.addAccount(other)
+    assert.deepEqual(persistedLogins(data), [
+      account.login,
+      third.login,
+      other.login,
+    ])
   })
 })
