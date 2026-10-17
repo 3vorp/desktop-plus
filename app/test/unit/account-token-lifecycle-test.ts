@@ -24,8 +24,6 @@ const account = new Account(
   'https://api.github.com',
   'dotcom',
   'old-access',
-  '',
-  0,
   [],
   '',
   1,
@@ -233,7 +231,12 @@ describe('Unused OAuth credential cleanup', () => {
           return new Response(null, { status: 204 })
         }
       )
-      await store.revokeUnusedToken({ endpoint, token: 'unused' })
+      await store.revokeUnusedToken({
+        endpoint,
+        apiType:
+          endpoint === 'https://api.github.com' ? 'dotcom' : 'enterprise',
+        token: 'unused',
+      })
       assert.equal(fetch.mock.callCount(), 1)
       assert.deepEqual(await store.getAll(), [])
       t.mock.timers.tick(30_000)
@@ -376,7 +379,7 @@ describe('Coordinated account token renewal', () => {
             ? {
                 status: 'rejected',
                 reason: new Error(
-                  'Unable to renew your GitHub session. Check your connection and try again shortly.'
+                  'Unable to renew your session. Check your connection and try again shortly.'
                 ),
               }
             : { status: 'fulfilled', value: renewed.accessToken }
@@ -692,8 +695,6 @@ describe('Coordinated account token renewal', () => {
       account.endpoint,
       'dotcom',
       'other-token',
-      '',
-      0,
       [],
       '',
       2,
@@ -806,8 +807,6 @@ describe('Coordinated account token renewal', () => {
       account.endpoint,
       'dotcom',
       renewed.accessToken,
-      '',
-      0,
       [],
       '',
       2,
@@ -916,8 +915,6 @@ describe('Coordinated account token renewal', () => {
         account.endpoint,
         'dotcom',
         'replacement-access',
-        '',
-        0,
         [],
         '',
         login === account.login ? account.id : 2,
@@ -958,8 +955,6 @@ describe('Coordinated account token renewal', () => {
         account.endpoint,
         'dotcom',
         'other-access',
-        '',
-        0,
         [],
         '',
         2,
@@ -1006,8 +1001,6 @@ describe('Coordinated account token renewal', () => {
       account.endpoint,
       'dotcom',
       'other-access',
-      '',
-      0,
       [],
       '',
       2,
@@ -1061,8 +1054,6 @@ describe('Coordinated account token renewal', () => {
       account.endpoint,
       'dotcom',
       account.token,
-      '',
-      0,
       [],
       '',
       account.id,
@@ -1094,8 +1085,6 @@ describe('Coordinated account token renewal', () => {
       account.endpoint,
       'dotcom',
       'other-token',
-      '',
-      0,
       [],
       '',
       2,
@@ -1135,6 +1124,9 @@ describe('Coordinated account token renewal', () => {
     await store.invalidateToken(account.endpoint, account.token)
     assert.equal((await store.getAll())[0].token, renewed.accessToken)
     await store.invalidateToken(account.endpoint, renewed.accessToken)
+    // A rotating pair is renewed once before it is given up.
+    assert.equal((await store.getAll()).length, 1)
+    await store.invalidateToken(account.endpoint, renewed.accessToken)
     assert.deepEqual(await store.getAll(), [])
     await assert.rejects(
       store.getAccountWithFreshToken(account),
@@ -1165,8 +1157,6 @@ describe('Several accounts on one endpoint', () => {
     account.endpoint,
     'dotcom',
     'other-access',
-    '',
-    0,
     [],
     '',
     2,
@@ -1498,7 +1488,7 @@ describe('Several accounts on one endpoint', () => {
     await expectUsable(store, account, account.token)
   })
 
-  it('modifying a third-party account only updates the account with that login', async () => {
+  it('renewing a third-party login leaves another login untouched', async () => {
     // Bitbucket identities always have id 0.
     const bitbucket = (login: string, token: string) =>
       new Account(
@@ -1506,57 +1496,54 @@ describe('Several accounts on one endpoint', () => {
         BitbucketCloudAPIEndpoint,
         'bitbucket',
         token,
-        `${login}-refresh`,
-        now + 60 * 60 * 1000,
         [],
         '',
         0,
         login
       )
-    const { store, secure } = setup()
+    const renewals = new Array<string>()
+    const { store, secure } = setup(async (_, refreshToken) => {
+      renewals.push(refreshToken)
+      return {
+        accessToken: `${refreshToken}-access`,
+        refreshToken: `${refreshToken}-next`,
+        expiresAt: now + 3_600_000,
+      }
+    })
     const first = bitbucket('first', 'first-token')
     const second = bitbucket('second', 'second-token')
-    assert.ok(await store.addAccount(first))
-    assert.ok(await store.addAccount(second))
-    const firstGetter = store.createTokenGetter(first)
-    const secondGetter = store.createTokenGetter(second)
-
-    const modified = await store.modifyAccount(
-      first.withRefreshToken('first-new', 'first-new-refresh', now)
+    const secondCredential = {
+      accessToken: second.token,
+      refreshToken: 'second-refresh',
+      expiresAt: now + 3_600_000,
+    }
+    assert.ok(
+      await store.addAccount(first, {
+        accessToken: first.token,
+        refreshToken: 'first-refresh',
+        expiresAt: now,
+      })
     )
+    assert.ok(await store.addAccount(second, secondCredential))
 
-    assert.equal(modified?.login, first.login)
-    assert.equal(modified?.token, 'first-new')
+    const renewedFirst = await store.getAccountWithFreshToken(first)
+
+    assert.equal(renewedFirst.token, 'first-refresh-access')
+    assert.deepEqual(renewals, ['first-refresh'])
     assert.deepEqual(logins(await store.getAll()), [
-      `${first.login}:first-new`,
+      `${first.login}:first-refresh-access`,
       `${second.login}:${second.token}`,
     ])
-    assert.deepEqual(await stored(secure, first), { accessToken: 'first-new' })
-    assert.deepEqual(await stored(secure, second), {
-      accessToken: second.token,
+    assert.deepEqual(await stored(secure, first), {
+      accessToken: 'first-refresh-access',
+      refreshToken: 'first-refresh-next',
+      expiresAt: now + 3_600_000,
+      refreshTokenExpiresAt: undefined,
     })
-    await assert.rejects(firstGetter(), AccountRequiresSignInError)
-    assert.equal((await secondGetter()).accessToken, second.token)
-    assert.equal(
-      (await store.getAccountWithFreshToken(second)).token,
-      second.token
-    )
-
-    // A late refresh for a signed-out login must not land on another account.
-    await store.removeAccount(first)
-    assert.equal(
-      await store.modifyAccount(
-        first.withRefreshToken('late-token', 'late-refresh', now)
-      ),
-      null
-    )
-    assert.deepEqual(logins(await store.getAll()), [
-      `${second.login}:${second.token}`,
-    ])
-    assert.equal(await stored(secure, first), null)
     assert.deepEqual(await stored(secure, second), {
-      accessToken: second.token,
+      ...secondCredential,
+      refreshTokenExpiresAt: undefined,
     })
-    assert.equal((await secondGetter()).accessToken, second.token)
+    await expectUsable(store, second, second.token)
   })
 })

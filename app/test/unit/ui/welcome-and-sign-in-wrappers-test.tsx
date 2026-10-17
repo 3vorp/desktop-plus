@@ -114,8 +114,6 @@ function createExistingAccountWarningState(): IExistingAccountWarning {
       'https://api.github.com',
       'dotcom',
       'token',
-      '',
-      0,
       [],
       '',
       1,

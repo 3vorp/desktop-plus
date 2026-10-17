@@ -70,7 +70,7 @@ async function getGitHubCredential(
       const lease = await store.leaseAccountToken(account, token)
       holdCredentialLease(token, lease.release)
       rememberAccountCredential(token, getCredentialUrl(cred))
-      return credWithAccount(cred, await accountToGitCredential(lease.account))
+      return credWithAccount(cred, accountToGitCredential(lease.account))
     } catch (e) {
       if (!(e instanceof AccountRequiresSignInError)) {
         throw e

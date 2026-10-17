@@ -90,8 +90,6 @@ describe('OAuth API integration', () => {
       endpoint,
       'dotcom',
       'current-token',
-      '',
-      0,
       [],
       '',
       1,

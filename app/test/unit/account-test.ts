@@ -8,7 +8,7 @@ import {
 } from '../../src/lib/endpoint-api-type-registry'
 
 const createAccount = (endpoint: string, apiType: 'gitlab' | 'enterprise') =>
-  new Account('joan', endpoint, apiType, 't', '', 0, [], '', 1, 'Joan')
+  new Account('joan', endpoint, apiType, 't', [], '', 1, 'Joan')
 
 describe('Account', () => {
   beforeEach(() => {
@@ -28,8 +28,6 @@ describe('Account', () => {
         getDotComAPIEndpoint(),
         'dotcom',
         't',
-        '',
-        0,
         [],
         '',
         1,

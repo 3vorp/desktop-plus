@@ -13,18 +13,7 @@ import {
 const selfHostedEndpoint = 'https://git.example.com:3000/api/v4'
 
 const createGitLabAccount = () =>
-  new Account(
-    'joan',
-    selfHostedEndpoint,
-    'gitlab',
-    't',
-    '',
-    0,
-    [],
-    '',
-    1,
-    'Joan'
-  )
+  new Account('joan', selfHostedEndpoint, 'gitlab', 't', [], '', 1, 'Joan')
 
 function renderAccounts(
   accounts: ReadonlyArray<Account>,

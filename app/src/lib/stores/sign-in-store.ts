@@ -15,20 +15,16 @@ import {
   getHTMLURL,
   BitbucketCloudAPIEndpoint,
   getBitbucketOAuthAuthorizationURL,
-  requestOAuthTokenBitbucket,
   CodebergCloudAPIEndpoint,
   getCodebergOAuthAuthorizationURL,
   GitLabCloudAPIEndpoint,
   getGitLabOAuthAuthorizationURL,
-  requestOAuthTokenCodeberg,
-  requestOAuthTokenGitLab,
   GitLabApiPath,
   ForgejoApiPath,
   GitLabRequiredScopes,
   ForgejoRequiredScopes,
   GiteaCloudAPIEndpoint,
   getGiteaOAuthAuthorizationURL,
-  requestOAuthTokenGitea,
   GiteaApiPath,
   GiteaRequiredScopes,
 } from '../../lib/api'
@@ -43,6 +39,7 @@ import { AccountsStore } from './accounts-store'
 import { RepoType } from '../../models/github-repository'
 import { isGHES } from '../endpoint-capabilities'
 import { exchangeOAuthToken, IOAuthToken } from '../oauth-token'
+import { exchangeThirdPartyOAuthToken } from '../third-party-oauth-token'
 
 /**
  * An enumeration of the possible steps that the sign in
@@ -619,8 +616,7 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
     const isSignInAttemptActive = () =>
       this.state?.kind === SignInStep.Authentication &&
       this.state.oauthState === oauthState
-    const isGitHub = oauthState.oauthProvider === 'github'
-    let unpublishedToken: string | undefined
+    let unpublished: IOAuthToken | undefined
     try {
       const credential = await this.exchangeOAuthCode(
         oauthState.oauthProvider,
@@ -628,8 +624,7 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
         action.code,
         oauthState.codeVerifier
       )
-      // Revocation uses GitHub's OAuth app endpoint, so it only applies there.
-      unpublishedToken = isGitHub ? credential.accessToken : undefined
+      unpublished = credential
       if (!isSignInAttemptActive()) {
         return
       }
@@ -637,22 +632,14 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
         endpoint,
         apiType,
         credential.accessToken,
-        credential.refreshToken ?? '',
-        credential.expiresAt ?? 0,
-        UnknownLogin.InitialAuthFetch,
-        true
+        UnknownLogin.InitialAuthFetch
       )
       if (!isSignInAttemptActive()) {
         return
       }
-      // Third-party providers still renew their tokens in their API clients
-      // (see Account.refreshToken), not through GitHub's credential sessions.
-      const stored = await this.accountStore.addAccount(
-        account,
-        isGitHub ? credential : undefined
-      )
+      const stored = await this.accountStore.addAccount(account, credential)
       if (stored !== null) {
-        unpublishedToken = undefined
+        unpublished = undefined
       }
       if (!isSignInAttemptActive()) {
         return
@@ -669,10 +656,12 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
       if (this.resolvingOAuthState === oauthState.state) {
         this.resolvingOAuthState = undefined
       }
-      if (unpublishedToken !== undefined) {
+      if (unpublished !== undefined) {
         void this.accountStore.revokeUnusedToken({
           endpoint,
-          token: unpublishedToken,
+          apiType,
+          token: unpublished.accessToken,
+          hasRefreshToken: unpublished.refreshToken !== undefined,
         })
       }
     }
@@ -687,36 +676,7 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
     if (oauthProvider === 'github') {
       return exchangeOAuthToken(getHTMLURL(endpoint), code, codeVerifier)
     }
-
-    const tokenData = await this.getOauthTokenData(
-      oauthProvider,
-      code,
-      codeVerifier
-    )
-    if (tokenData === null) {
-      throw new Error('Failed retrieving authenticated user')
-    }
-    const [accessToken, refreshToken, expiresAt] = tokenData
-    return { accessToken, refreshToken, expiresAt }
-  }
-
-  private async getOauthTokenData(
-    oauthProvider: Exclude<OAuthProvider, 'github'>,
-    code: string,
-    codeVerifier: string
-  ) {
-    switch (oauthProvider) {
-      case 'bitbucket':
-        return await requestOAuthTokenBitbucket(code, codeVerifier)
-      case 'gitlab':
-        return await requestOAuthTokenGitLab(code, codeVerifier)
-      case 'forgejo':
-        return await requestOAuthTokenCodeberg(code, codeVerifier)
-      case 'gitea':
-        return await requestOAuthTokenGitea(code, codeVerifier)
-      default:
-        assertNever(oauthProvider, 'Unexpected oauth provider')
-    }
+    return exchangeThirdPartyOAuthToken(oauthProvider, code, codeVerifier)
   }
 
   /**
@@ -969,8 +929,6 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
         endpoint,
         apiType,
         token,
-        '',
-        0,
         UnknownLogin.InitialAuthFetch
       )
     } catch (e) {

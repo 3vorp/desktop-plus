@@ -1,7 +1,6 @@
 import * as URL from 'url'
 import { Account, AccountAPIType, UnknownLogin } from '../models/account'
 import {
-  deriveWebBaseUrl,
   findRegisteredEndpointForHost,
   getRegisteredApiType,
   getRegisteredEndpoint,
@@ -47,7 +46,7 @@ if (envAdditionalCookies !== undefined) {
   document.cookie += '; ' + envAdditionalCookies
 }
 
-const oauthRedirectUri = __DEV_SECRETS__
+export const oauthRedirectUri = __DEV_SECRETS__
   ? 'https://desktop-plus.org/oauth?dev=1'
   : 'https://desktop-plus.org/oauth'
 
@@ -187,10 +186,19 @@ if (!ClientIDGitea?.length || !ClientSecretGitea?.length) {
   )
 }
 
-const BitbucketBasicAuth = () =>
-  Buffer.from(`${ClientIDBitbucket}:${ClientSecretBitbucket}`).toString(
-    'base64'
-  )
+const ThirdPartyOAuthApps: Readonly<
+  Record<RegisteredApiType, ReadonlyArray<string | undefined>>
+> = {
+  bitbucket: [ClientIDBitbucket, ClientSecretBitbucket],
+  gitlab: [ClientIDGitLab, ClientSecretGitLab],
+  forgejo: [ClientIDCodeberg, ClientSecretCodeberg],
+  gitea: [ClientIDGitea, ClientSecretGitea],
+}
+
+export function getThirdPartyOAuthApp(apiType: RegisteredApiType) {
+  const [clientId, clientSecret] = ThirdPartyOAuthApps[apiType]
+  return { clientId: clientId ?? '', clientSecret: clientSecret ?? '' }
+}
 
 export type GitHubAccountType = 'User' | 'Organization'
 
@@ -1472,26 +1480,6 @@ export interface IAPIComment {
   readonly created_at: string
 }
 
-interface IBitbucketAPIAccessToken {
-  readonly access_token: string
-  readonly token_type: string
-  readonly scopes: string
-  readonly expires_in: number
-  readonly refresh_token: string
-}
-interface IGitLabAPIAccessToken {
-  readonly access_token: string
-  readonly token_type: string
-  readonly expires_in: number
-  readonly refresh_token: string
-  readonly created_at: number
-}
-interface IForgejoAPIAccessToken {
-  readonly access_token: string
-  readonly expires_in: number
-  readonly refresh_token: string
-}
-
 /** The response we receive from fetching mentionables. */
 interface IAPIMentionablesResponse {
   readonly etag: string | undefined
@@ -1638,13 +1626,6 @@ type TokenInvalidatedCallback = (
   token: string,
   login: string | UnknownLogin
 ) => void
-type TokenRefreshedCallback = (
-  endpoint: string,
-  token: string,
-  refreshToken: string,
-  expiresAt: number,
-  login: string | UnknownLogin
-) => void
 
 export interface IAPICreatePushProtectionBypassResponse {
   reason: BypassReasonType
@@ -1674,8 +1655,6 @@ export class API {
     | undefined
   private static readonly tokenInvalidatedListeners =
     new Set<TokenInvalidatedCallback>()
-  private static readonly tokenRefreshedListeners =
-    new Set<TokenRefreshedCallback>()
 
   /** Install the renderer's shared credential authority. Returns a cleanup function. */
   public static setTokenProvider(
@@ -1697,10 +1676,6 @@ export class API {
     return () => this.tokenInvalidatedListeners.delete(callback)
   }
 
-  public static onTokenRefreshed(callback: TokenRefreshedCallback) {
-    this.tokenRefreshedListeners.add(callback)
-  }
-
   protected static emitTokenInvalidated(
     endpoint: string,
     token: string,
@@ -1708,18 +1683,6 @@ export class API {
   ) {
     this.tokenInvalidatedListeners.forEach(callback =>
       callback(endpoint, token, login)
-    )
-  }
-
-  protected static emitTokenRefreshed(
-    endpoint: string,
-    token: string,
-    refreshToken: string,
-    expiresAt: number,
-    login: string | UnknownLogin
-  ) {
-    this.tokenRefreshedListeners.forEach(callback =>
-      callback(endpoint, token, refreshToken, expiresAt, login)
     )
   }
 
@@ -1731,8 +1694,6 @@ export class API {
       account.endpoint,
       account.token,
       account.login,
-      account.refreshToken,
-      account.tokenExpiresAt,
       account.copilotEndpoint,
       account.id !== -1
     )
@@ -1742,7 +1703,6 @@ export class API {
   protected token: string
   protected login: string | UnknownLogin
   private copilotEndpoint?: string
-  private refreshTokenPromise?: Promise<void>
 
   /** Create a new API client for the endpoint, authenticated with the token. */
   public constructor(
@@ -1765,12 +1725,6 @@ export class API {
 
   public getToken() {
     return this.token
-  }
-  public getRefreshToken() {
-    return ''
-  }
-  public getExpiresAt() {
-    return 0
   }
 
   protected get maxPerPage() {
@@ -1994,41 +1948,6 @@ export class API {
         error
       )
     }
-  }
-
-  private async refreshTokenWithMutex() {
-    // Since JS is single-threaded we don't have to worry about nasty race conditions, but we do need to be careful around awaits
-    if (this.refreshTokenPromise) {
-      // Another refresh is already in progress in the event loop, just need to wait for it to finish.
-      // If the other refresh fails, ignore the error and continue with the request, which will invalidate the account.
-      await this.refreshTokenPromise.catch(() => {})
-      return
-    }
-    this.refreshTokenPromise = this.refreshToken()
-    try {
-      await this.refreshTokenPromise
-    } finally {
-      this.refreshTokenPromise = undefined
-    }
-  }
-
-  protected async refreshToken() {
-    // No special handling on GitHub
-  }
-
-  /**
-   * Refresh the access token if it has expired and return the (possibly
-   * refreshed) token. Git operations don't go through `request` and its lazy
-   * refresh logic, so they use this method to obtain a token that's safe to
-   * hand to git as an HTTPS credential.
-   */
-  public async ensureFreshToken(): Promise<string> {
-    const expiration = this.getTokenExpiration()
-    if (expiration !== null && expiration.getTime() < Date.now()) {
-      log.info(`Token expired for endpoint ${this.endpoint}, refreshing token`)
-      await this.refreshTokenWithMutex()
-    }
-    return this.token
   }
 
   /** Fetch the logged in account. */
@@ -2829,12 +2748,6 @@ export class API {
     } = {},
     resolvedToken?: string
   ): Promise<Response> {
-    const expiration = this.getTokenExpiration()
-    if (expiration !== null && expiration.getTime() < Date.now()) {
-      log.warn(`Token expired for endpoint ${this.endpoint}, refreshing token`)
-      await this.refreshTokenWithMutex()
-    }
-
     const token =
       resolvedToken ??
       (API.tokenProvider && this.manageAccountToken
@@ -2846,7 +2759,7 @@ export class API {
       method,
       path,
       options.body,
-      { ...this.getExtraHeaders(), ...options.customHeaders },
+      options.customHeaders,
       options.reloadCache
     )
   }
@@ -2883,28 +2796,23 @@ export class API {
     return response
   }
 
-  protected checkTokenInvalidated(response: Response, token: string) {
+  private checkTokenInvalidated(response: Response, token: string) {
+    if (this.manageAccountToken && this.isTokenRejected(response)) {
+      API.emitTokenInvalidated(this.endpoint, token, this.login)
+    }
+  }
+
+  protected isTokenRejected(response: Response) {
     // Only consider invalid token when the status is 401 and the response has
     // the X-GitHub-Request-Id header, meaning it comes from GH(E) and not from
     // any kind of proxy/gateway. For more info see #12943
     // We're also not considering a token has been invalidated when the reason
     // behind a 401 is the fact that any kind of 2 factor auth is required.
-    if (
-      this.manageAccountToken &&
+    return (
       response.status === HttpStatusCode.Unauthorized &&
       response.headers.has('X-GitHub-Request-Id') &&
       !response.headers.has('X-GitHub-OTP')
-    ) {
-      API.emitTokenInvalidated(this.endpoint, token, this.login)
-    }
-  }
-
-  protected getTokenExpiration(): Date | null {
-    return null
-  }
-
-  protected getExtraHeaders(): Object {
-    return {}
+    )
   }
 
   /**
@@ -3290,20 +3198,16 @@ export async function fetchUser(
   endpoint: string,
   apiType: AccountAPIType,
   token: string,
-  refreshToken: string,
-  expiresAt: number,
-  login: string | UnknownLogin,
-  isNewAuthorization = false
+  login: string | UnknownLogin
 ): Promise<Account> {
+  // A token being signed in is not installed yet: use it as-is.
   const api = instantiateAPI(
     apiType,
     endpoint,
     token,
     login,
-    refreshToken,
-    expiresAt,
     undefined,
-    !isNewAuthorization
+    login !== UnknownLogin.InitialAuthFetch
   )
   try {
     const [user, emails, copilotInfo, features] = await Promise.all([
@@ -3317,9 +3221,7 @@ export async function fetchUser(
       user.login,
       endpoint,
       apiType,
-      api.getToken(), // Grab it back from the API because it may have been refreshed
-      api.getRefreshToken(),
-      api.getExpiresAt(),
+      token,
       emails,
       user.avatar_url,
       user.id,
@@ -3334,10 +3236,6 @@ export async function fetchUser(
     log.warn(`fetchUser: failed with endpoint ${endpoint}`, e)
     throw e
   }
-}
-
-function toExpiresAt(expiresInSeconds: number) {
-  return Date.now() + expiresInSeconds * 900 // 10% safety buffer
 }
 
 /**
@@ -3614,122 +3512,6 @@ export function getGiteaOAuthAuthorizationURL(
   return `${GiteaCloudURL}/login/oauth/authorize?client_id=${ClientIDGitea}&redirect_uri=${encodedRedirectUri}&response_type=code&scope=${scope}&state=${state}&${pkceParams}`
 }
 
-export async function requestOAuthTokenBitbucket(
-  code: string,
-  codeVerifier: string
-): Promise<[string, string, number] | null> {
-  try {
-    const response = await fetch(
-      'https://bitbucket.org/site/oauth2/access_token',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Basic ${BitbucketBasicAuth()}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: `grant_type=authorization_code&code=${code}&code_verifier=${codeVerifier}`,
-      }
-    )
-
-    const result = await parsedResponse<IBitbucketAPIAccessToken>(response)
-    const expiresAt = toExpiresAt(result.expires_in)
-    return [result.access_token, result.refresh_token, expiresAt]
-  } catch (e) {
-    log.warn('requestOAuthTokenBitbucket failed', e)
-    return null
-  }
-}
-
-export async function requestOAuthTokenGitLab(
-  code: string,
-  codeVerifier: string
-): Promise<[string, string, number] | null> {
-  try {
-    const response = await fetch('https://gitlab.com/oauth/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        client_id: ClientIDGitLab,
-        client_secret: ClientSecretGitLab,
-        code: code,
-        grant_type: 'authorization_code',
-        redirect_uri: oauthRedirectUri,
-        code_verifier: codeVerifier,
-      }),
-    })
-
-    const result = await parsedResponse<IGitLabAPIAccessToken>(response)
-    const expiresAt = toExpiresAt(result.expires_in)
-    return [result.access_token, result.refresh_token, expiresAt]
-  } catch (e) {
-    log.warn('requestOAuthTokenGitLab failed', e)
-    return null
-  }
-}
-
-export async function requestOAuthTokenCodeberg(
-  code: string,
-  codeVerifier: string
-): Promise<[string, string, number] | null> {
-  try {
-    const response = await fetch(
-      `${CodebergCloudURL}/login/oauth/access_token`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          client_id: ClientIDCodeberg,
-          client_secret: ClientSecretCodeberg,
-          code: code,
-          grant_type: 'authorization_code',
-          redirect_uri: oauthRedirectUri,
-          code_verifier: codeVerifier,
-        }),
-      }
-    )
-
-    const result = await parsedResponse<IForgejoAPIAccessToken>(response)
-    const expiresAt = toExpiresAt(result.expires_in)
-    return [result.access_token, result.refresh_token, expiresAt]
-  } catch (e) {
-    log.warn('requestOAuthTokenCodeberg failed', e)
-    return null
-  }
-}
-
-export async function requestOAuthTokenGitea(
-  code: string,
-  codeVerifier: string
-): Promise<[string, string, number] | null> {
-  try {
-    const response = await fetch(`${GiteaCloudURL}/login/oauth/access_token`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        client_id: ClientIDGitea,
-        client_secret: ClientSecretGitea,
-        code: code,
-        grant_type: 'authorization_code',
-        redirect_uri: oauthRedirectUri,
-        code_verifier: codeVerifier,
-      }),
-    })
-
-    const result = await parsedResponse<IForgejoAPIAccessToken>(response)
-    const expiresAt = toExpiresAt(result.expires_in)
-    return [result.access_token, result.refresh_token, expiresAt]
-  } catch (e) {
-    log.warn('requestOAuthTokenGitea failed', e)
-    return null
-  }
-}
-
 function tryUpdateEndpointVersionFromResponse(
   endpoint: string,
   response: Response
@@ -3849,28 +3631,13 @@ const isNotFoundApiError = (error: any) =>
   error instanceof APIError && error.responseStatus === 404
 
 export class BitbucketAPI extends API {
-  private apiRefreshToken: string
-  private expiresAt: Date | null = null
-
   public constructor(
     endpoint: string,
     token: string,
     login: string | UnknownLogin,
-    refreshToken: string,
-    expiresAt: number
+    manageAccountToken = true
   ) {
-    // These providers refresh their own tokens, so they don't go through the
-    // GitHub credential sessions.
-    super(endpoint, token, login, undefined, false)
-    this.apiRefreshToken = refreshToken
-    this.expiresAt = expiresAt ? new Date(expiresAt) : null
-  }
-
-  public override getRefreshToken() {
-    return this.apiRefreshToken
-  }
-  public override getExpiresAt() {
-    return this.expiresAt?.getTime() ?? 0
+    super(endpoint, token, login, undefined, manageAccountToken)
   }
 
   // https://developer.atlassian.com/cloud/bitbucket/rest/intro/#pagination
@@ -3890,55 +3657,8 @@ export class BitbucketAPI extends API {
     return 'values'
   }
 
-  protected override async refreshToken() {
-    if (!this.apiRefreshToken) {
-      return
-    }
-
-    try {
-      // This API won't work for Bitbucket Server anyways, so it's fine to hardcode the oauth endpoint here
-      const response = await fetch(
-        'https://bitbucket.org/site/oauth2/access_token',
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Basic ${BitbucketBasicAuth()}`,
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: `grant_type=refresh_token&refresh_token=${this.apiRefreshToken}`,
-        }
-      )
-
-      const result = await parsedResponse<IBitbucketAPIAccessToken>(response)
-      this.token = result.access_token
-      this.apiRefreshToken = result.refresh_token
-      this.expiresAt = new Date(toExpiresAt(result.expires_in))
-      API.emitTokenRefreshed(
-        this.endpoint,
-        this.token,
-        this.apiRefreshToken,
-        this.expiresAt.getTime(),
-        this.login
-      )
-    } catch (e) {
-      log.warn('refreshOAuthTokenBitbucket failed', e)
-    }
-  }
-
-  protected override getExtraHeaders(): Object {
-    return {
-      Authorization: `Bearer ${this.token}`,
-    }
-  }
-
-  protected override checkTokenInvalidated(response: Response) {
-    if (response.status === 401) {
-      API.emitTokenInvalidated(this.endpoint, this.token, this.login)
-    }
-  }
-
-  protected override getTokenExpiration(): Date | null {
-    return this.expiresAt
+  protected override isTokenRejected(response: Response) {
+    return response.status === HttpStatusCode.Unauthorized
   }
 
   public override async fetchAllOpenPullRequests(
@@ -4198,58 +3918,13 @@ export class BitbucketAPI extends API {
 }
 
 export class GitLabAPI extends API {
-  // Refreshing the token also invalidates both the old token and the old refresh token.
-  // We need to make GitLabAPI a per-login singleton to ensure there are no race conditions when refreshing the token
-  private static readonly instances: Map<string, GitLabAPI> = new Map()
-
-  public static get(
+  public constructor(
     endpoint: string,
     token: string,
     login: string | UnknownLogin,
-    refreshToken: string,
-    expiresAt: number
-  ): GitLabAPI {
-    if (login === UnknownLogin.InitialAuthFetch) {
-      return new GitLabAPI(endpoint, token, login, refreshToken, expiresAt)
-    }
-    const instanceKey = `${endpoint}:${login}`
-    const instance = this.instances.get(instanceKey)
-    if (!instance || !instance.token) {
-      const newInstance = new GitLabAPI(
-        endpoint,
-        token,
-        login,
-        refreshToken,
-        expiresAt
-      )
-      this.instances.set(instanceKey, newInstance)
-      return newInstance
-    }
-    return instance
-  }
-
-  private apiRefreshToken: string
-  private expiresAt: Date | null = null
-
-  private constructor(
-    endpoint: string,
-    token: string,
-    login: string | UnknownLogin,
-    refreshToken: string,
-    expiresAt: number
+    manageAccountToken = true
   ) {
-    // These providers refresh their own tokens, so they don't go through the
-    // GitHub credential sessions.
-    super(endpoint, token, login, undefined, false)
-    this.apiRefreshToken = refreshToken
-    this.expiresAt = expiresAt ? new Date(expiresAt) : null
-  }
-
-  public override getRefreshToken() {
-    return this.apiRefreshToken
-  }
-  public override getExpiresAt() {
-    return this.expiresAt?.getTime() ?? 0
+    super(endpoint, token, login, undefined, manageAccountToken)
   }
 
   // https://docs.gitlab.com/api/rest/#offset-based-pagination
@@ -4269,56 +3944,8 @@ export class GitLabAPI extends API {
     return ''
   }
 
-  protected override async refreshToken() {
-    if (!this.apiRefreshToken) {
-      return
-    }
-
-    try {
-      const instanceRoot = deriveWebBaseUrl(this.endpoint, 'gitlab')
-      const response = await fetch(`${instanceRoot}/oauth/token`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          client_id: ClientIDGitLab,
-          client_secret: ClientSecretGitLab,
-          refresh_token: this.apiRefreshToken,
-          grant_type: 'refresh_token',
-        }),
-      })
-
-      const result = await parsedResponse<IGitLabAPIAccessToken>(response)
-      this.token = result.access_token
-      this.apiRefreshToken = result.refresh_token
-      this.expiresAt = new Date(toExpiresAt(result.expires_in))
-      API.emitTokenRefreshed(
-        this.endpoint,
-        this.token,
-        this.apiRefreshToken,
-        this.expiresAt.getTime(),
-        this.login
-      )
-    } catch (e) {
-      log.warn('refreshOAuthTokenGitLab failed', e)
-    }
-  }
-
-  protected override getExtraHeaders(): Object {
-    return {
-      Authorization: `Bearer ${this.token}`,
-    }
-  }
-
-  protected override checkTokenInvalidated(response: Response) {
-    if (response.status === 401) {
-      API.emitTokenInvalidated(this.endpoint, this.token, this.login)
-    }
-  }
-
-  protected override getTokenExpiration(): Date | null {
-    return this.expiresAt
+  protected override isTokenRejected(response: Response) {
+    return response.status === HttpStatusCode.Unauthorized
   }
 
   public override async fetchAllOpenPullRequests(
@@ -4602,73 +4229,17 @@ export class GitLabAPI extends API {
 }
 
 export class ForgejoAPI extends API {
-  // Forgejo may invalidate the previous refresh token when refreshing the
-  // access token (depending on the server's INVALIDATE_REFRESH_TOKENS
-  // setting), so use a per-login singleton to guarantee a single
-  // token-refresh chain per account.
-  private static readonly instances: Map<string, ForgejoAPI> = new Map()
-
-  public static get(
+  public constructor(
     endpoint: string,
     token: string,
     login: string | UnknownLogin,
-    refreshToken: string,
-    expiresAt: number
-  ): ForgejoAPI {
-    if (login === UnknownLogin.InitialAuthFetch) {
-      return new this(endpoint, token, login, refreshToken, expiresAt)
-    }
-    const instanceKey = `${endpoint}:${login}`
-    const instance = ForgejoAPI.instances.get(instanceKey)
-    if (!instance?.token || instance.constructor !== this) {
-      const newInstance = new this(
-        endpoint,
-        token,
-        login,
-        refreshToken,
-        expiresAt
-      )
-      ForgejoAPI.instances.set(instanceKey, newInstance)
-      return newInstance
-    }
-    return instance
-  }
-
-  private apiRefreshToken: string
-  private expiresAt: Date | null = null
-
-  protected constructor(
-    endpoint: string,
-    token: string,
-    login: string | UnknownLogin,
-    refreshToken: string,
-    expiresAt: number
+    manageAccountToken = true
   ) {
-    // These providers refresh their own tokens, so they don't go through the
-    // GitHub credential sessions.
-    super(endpoint, token, login, undefined, false)
-    this.apiRefreshToken = refreshToken
-    this.expiresAt = expiresAt ? new Date(expiresAt) : null
-  }
-
-  public override getRefreshToken() {
-    return this.apiRefreshToken
-  }
-
-  public override getExpiresAt() {
-    return this.expiresAt?.getTime() ?? 0
+    super(endpoint, token, login, undefined, manageAccountToken)
   }
 
   protected get apiType(): RegisteredApiType {
     return 'forgejo'
-  }
-
-  protected get oauthClientId() {
-    return ClientIDCodeberg
-  }
-
-  protected get oauthClientSecret() {
-    return ClientSecretCodeberg
   }
 
   // https://forgejo.org/docs/latest/user/api-usage/
@@ -4688,56 +4259,8 @@ export class ForgejoAPI extends API {
     return ''
   }
 
-  protected override async refreshToken() {
-    if (!this.apiRefreshToken) {
-      return
-    }
-
-    try {
-      const instanceRoot = deriveWebBaseUrl(this.endpoint, this.apiType)
-      const response = await fetch(`${instanceRoot}/login/oauth/access_token`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          client_id: this.oauthClientId,
-          client_secret: this.oauthClientSecret,
-          refresh_token: this.apiRefreshToken,
-          grant_type: 'refresh_token',
-        }),
-      })
-
-      const result = await parsedResponse<IForgejoAPIAccessToken>(response)
-      this.token = result.access_token
-      this.apiRefreshToken = result.refresh_token ?? ''
-      this.expiresAt = new Date(toExpiresAt(result.expires_in))
-      API.emitTokenRefreshed(
-        this.endpoint,
-        this.token,
-        this.apiRefreshToken,
-        this.expiresAt.getTime(),
-        this.login
-      )
-    } catch (e) {
-      log.warn(`${this.apiType} refreshToken failed`, e)
-    }
-  }
-
-  protected override getExtraHeaders(): Object {
-    return {
-      Authorization: `Bearer ${this.token}`,
-    }
-  }
-
-  protected override checkTokenInvalidated(response: Response) {
-    if (response.status === 401) {
-      API.emitTokenInvalidated(this.endpoint, this.token, this.login)
-    }
-  }
-
-  protected override getTokenExpiration(): Date | null {
-    return this.expiresAt
+  protected override isTokenRejected(response: Response) {
+    return response.status === HttpStatusCode.Unauthorized
   }
 
   public override async fetchAccount(): Promise<IAPIFullIdentity> {
@@ -5123,20 +4646,11 @@ export class ForgejoAPI extends API {
 
 /**
  * Gitea's REST API is identical to Forgejo's for everything we use,
- * only the provider identity (used to resolve the instance's web root and its
- * OAuth application) differs.
+ * only the provider identity differs.
  */
 export class GiteaAPI extends ForgejoAPI {
   protected override get apiType(): RegisteredApiType {
     return 'gitea'
-  }
-
-  protected override get oauthClientId() {
-    return ClientIDGitea
-  }
-
-  protected override get oauthClientSecret() {
-    return ClientSecretGitea
   }
 }
 
@@ -5145,20 +4659,18 @@ function instantiateAPI(
   endpoint: string,
   token: string,
   login: string | UnknownLogin,
-  refreshToken: string,
-  expiresAt: number,
   copilotEndpoint: string | undefined,
   manageAccountToken = true
 ): API {
   switch (apiType) {
     case 'bitbucket':
-      return new BitbucketAPI(endpoint, token, login, refreshToken, expiresAt)
+      return new BitbucketAPI(endpoint, token, login, manageAccountToken)
     case 'gitlab':
-      return GitLabAPI.get(endpoint, token, login, refreshToken, expiresAt)
+      return new GitLabAPI(endpoint, token, login, manageAccountToken)
     case 'forgejo':
-      return ForgejoAPI.get(endpoint, token, login, refreshToken, expiresAt)
+      return new ForgejoAPI(endpoint, token, login, manageAccountToken)
     case 'gitea':
-      return GiteaAPI.get(endpoint, token, login, refreshToken, expiresAt)
+      return new GiteaAPI(endpoint, token, login, manageAccountToken)
     case 'dotcom':
     case 'enterprise':
       return new API(

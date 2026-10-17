@@ -22,8 +22,6 @@ function createAccount(email: string) {
     getDotComAPIEndpoint(),
     'dotcom',
     '',
-    '',
-    0,
     [createEmail(email)],
     '',
     1,

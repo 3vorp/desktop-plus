@@ -42,8 +42,6 @@ describe('app-store-test-harness', () => {
         getDotComAPIEndpoint(),
         'dotcom',
         'test-token',
-        '',
-        0,
         [],
         '',
         1,

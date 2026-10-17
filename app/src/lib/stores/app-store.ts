@@ -70,7 +70,6 @@ import {
   Account,
   CopilotLicenseTypeNoAccess,
   isDotComAccount,
-  UnknownLogin,
 } from '../../models/account'
 import { AppMenu, IMenu } from '../../models/app-menu'
 import { Author } from '../../models/author'
@@ -173,9 +172,9 @@ import {
   IAPIFullRepository,
   IAPIComment,
   IAPIRepoRuleset,
-  deleteToken,
   IAPICreatePushProtectionBypassResponse,
 } from '../api'
+import { revokeAccountToken } from '../third-party-oauth-token'
 import { shell } from '../app-shell'
 import {
   CompareAction,
@@ -979,8 +978,6 @@ export class AppStore extends TypedBaseStore<IAppState> {
       }
     }, InitialRepositoryIndicatorTimeout)
 
-    API.onTokenRefreshed(this.onTokenRefreshed)
-
     this.notificationsStore.onChecksFailedNotification(
       this.onChecksFailedNotification
     )
@@ -1039,31 +1036,6 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
 
     return zoomFactor
-  }
-
-  private onTokenRefreshed = async (
-    endpoint: string,
-    token: string,
-    refreshToken: string,
-    tokenExpiresAt: number,
-    login: string | UnknownLogin
-  ) => {
-    if (login === UnknownLogin.InitialAuthFetch) {
-      console.error('Attempted to refresh token for initial account fetch!')
-      return
-    }
-
-    // Never write the refreshed credential into another login's account.
-    const account = getAccountForEndpoint(this.accounts, endpoint, login, true)
-    if (account === null) {
-      return
-    }
-    const updatedAccount = account.withRefreshToken(
-      token,
-      refreshToken,
-      tokenExpiresAt
-    )
-    await this._updateAccount(updatedAccount)
   }
 
   private onShowInstallingUpdate = () => {
@@ -9587,22 +9559,15 @@ export class AppStore extends TypedBaseStore<IAppState> {
     log.info(
       `[AppStore] removing account ${account.login} (${account.name}) from store`
     )
+    const hasRefreshToken = this.accountsStore.isRefreshable(account)
     const current = await this.accountsStore.removeAccount(account)
     await this.repositoriesStore.clearGitHubRepositoryLoginForEndpointAndLogin(
       account.endpoint,
       account.login
     )
     if (current?.token) {
-      await deleteToken(current)
+      await revokeAccountToken({ ...current, hasRefreshToken })
     }
-  }
-
-  public async _updateAccount(account: Account): Promise<void> {
-    log.info(
-      `[AppStore] updating account ${account.login} (${account.name}) in store`
-    )
-    await this.accountsStore.modifyAccount(account)
-    this.emitUpdate()
   }
 
   private onDidAuthenticate(account: Account): void {

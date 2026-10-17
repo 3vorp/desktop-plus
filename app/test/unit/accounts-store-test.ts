@@ -30,8 +30,6 @@ describe('AccountsStore', () => {
           '',
           'dotcom',
           'deadbeef',
-          '',
-          0,
           [],
           '',
           1,
@@ -184,19 +182,7 @@ describe('AccountsStore', () => {
     it('registers self-hosted endpoints when adding an account', async () => {
       const endpoint = 'https://gitlab.example.com/api/v4'
       const added = await accountsStore.addAccount(
-        new Account(
-          'joan',
-          endpoint,
-          'gitlab',
-          't',
-          '',
-          0,
-          [],
-          '',
-          1,
-          '',
-          'free'
-        )
+        new Account('joan', endpoint, 'gitlab', 't', [], '', 1, '', 'free')
       )
 
       assert.notEqual(added, null)
@@ -210,8 +196,6 @@ describe('AccountsStore', () => {
           GitLabCloudAPIEndpoint,
           'gitlab',
           't',
-          '',
-          0,
           [],
           '',
           1,
@@ -228,8 +212,6 @@ describe('AccountsStore', () => {
         'https://git.example.com/api/v3',
         'enterprise',
         't',
-        '',
-        0,
         [],
         '',
         1,
@@ -242,8 +224,6 @@ describe('AccountsStore', () => {
         'https://git.example.com/api/v4',
         'gitlab',
         't',
-        '',
-        0,
         [],
         '',
         2,
@@ -262,8 +242,6 @@ describe('AccountsStore', () => {
         'https://git.example.com:8443/api/v4',
         'gitlab',
         't',
-        '',
-        0,
         [],
         '',
         1,
@@ -274,8 +252,6 @@ describe('AccountsStore', () => {
         'https://git.example.com:3000/api/v1',
         'forgejo',
         't',
-        '',
-        0,
         [],
         '',
         2,
@@ -286,8 +262,6 @@ describe('AccountsStore', () => {
         'https://git.example.com:3001/api/v1',
         'gitea',
         't',
-        '',
-        0,
         [],
         '',
         3,
@@ -323,8 +297,6 @@ describe('AccountsStore', () => {
           'https://git.example.com/api/v3',
           'enterprise',
           't',
-          '',
-          0,
           [],
           '',
           1,

@@ -32,8 +32,6 @@ const account = new Account(
   'https://api.github.com',
   'dotcom',
   'old-access',
-  '',
-  0,
   [],
   '',
   1,

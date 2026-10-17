@@ -28,14 +28,29 @@ import {
   unregisterHost,
 } from '../endpoint-api-type-registry'
 import { Disposable } from 'event-kit'
-import { deleteToken } from '../api'
-import { IOAuthToken, refreshOAuthToken } from '../oauth-token'
-import { deserializeAccountCredential } from '../account-credential'
+import {
+  renewAccountToken,
+  revokeAccountToken,
+  RevocableToken,
+} from '../third-party-oauth-token'
+import { IOAuthToken } from '../oauth-token'
+import {
+  AccountCredential,
+  deserializeAccountCredential,
+} from '../account-credential'
 import {
   AccountRequiresSignInError,
   CredentialSessions,
+  getDefaultRenewalTiming,
   refreshMargin,
 } from '../credential-sessions'
+import { ChunkedSecureStore } from './chunked-secure-store'
+import {
+  getPersistedUserKey,
+  hasLegacyCredentialFields,
+  migrateLegacyCredential,
+  withPersistedUsers,
+} from './legacy-account-credential'
 
 // Ensure that GitHub.com accounts appear first followed by Enterprise
 // accounts, sorted by the order in which they were added.
@@ -99,8 +114,10 @@ interface IAccount {
   readonly token: string
   readonly login: string
   readonly endpoint: string
-  readonly refreshToken: string
-  readonly tokenExpiresAt: number
+  /** Legacy, only read to migrate it to secure storage. */
+  readonly refreshToken?: unknown
+  /** Legacy, only read to migrate it to secure storage. */
+  readonly tokenExpiresAt?: unknown
   readonly emails: ReadonlyArray<IEmail>
   readonly avatarURL: string
   readonly id: number
@@ -158,6 +175,9 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
 
   private accounts: ReadonlyArray<Account> = []
   private readonly credentials: CredentialSessions
+  /** Sign-in keys whose legacy refresh token could not be saved securely yet. */
+  private readonly pendingLegacyCredentials = new Set<string>()
+  private readonly unloadedUsers = new Map<string, string>()
 
   /** A promise that will resolve when the accounts have been loaded. */
   private loadingPromise: Promise<void>
@@ -165,11 +185,13 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
   public constructor(
     dataStore: IDataStore,
     secureStore: ISecureStore,
-    renewToken = refreshOAuthToken,
+    renewToken = renewAccountToken,
     now = Date.now,
-    revokeToken = deleteToken
+    revokeToken = revokeAccountToken,
+    timing = getDefaultRenewalTiming()
   ) {
     super()
+    secureStore = new ChunkedSecureStore(secureStore)
 
     this.dataStore = dataStore
     this.secureStore = secureStore
@@ -179,10 +201,12 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
         requireSignIn: this.requireSignIn,
         onTokenRenewed: this.onTokenRenewed,
         onSignedIn: this.onSignedIn,
+        onRemovedElsewhere: account => this.retireAccount(account),
       },
       renewToken,
       now,
-      revokeToken
+      revokeToken,
+      timing
     )
     this.loadingPromise = this.loadFromStore()
   }
@@ -204,7 +228,7 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
   /** Handle a rejected API token without leaving unhandled callback errors. */
   public handleTokenInvalidated = (endpoint: string, token: string): void => {
     void this.invalidateToken(endpoint, token).catch(error => {
-      log.error('Unable to invalidate rejected GitHub credentials', error)
+      log.error('Unable to invalidate rejected credentials', error)
       this.emitError(error)
     })
   }
@@ -295,9 +319,7 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
    * Cleanup is bounded and failures are logged. Callers need not await it, but
    * must only pass credentials that have not been installed for an account.
    */
-  public revokeUnusedToken(
-    account: Pick<Account, 'endpoint' | 'token'>
-  ): Promise<void> {
+  public revokeUnusedToken(account: RevocableToken): Promise<void> {
     return this.credentials.revokeUnusedToken(account)
   }
 
@@ -320,6 +342,7 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     accessToken: string,
     login: string
   ) => {
+    this.pendingLegacyCredentials.delete(`${endpoint}:${login}`)
     this.accounts = this.accounts.map(a =>
       a.endpoint === endpoint && a.login === login
         ? this.credentials.inheritSession(a, a.withToken(accessToken))
@@ -334,6 +357,7 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
       new Map<string, Account>()
     )
     accountsByKey.set(getSignInKey(account), account)
+    this.pendingLegacyCredentials.delete(getSignInKey(account))
 
     this.accounts = sortAccounts([...accountsByKey.values()])
     this.save()
@@ -414,32 +438,6 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     }
 
     return authenticatedAccount
-  }
-
-  /**
-   * Replace the credential of an installed account with the same endpoint,
-   * login and id, e.g. after a third-party provider refreshed its token.
-   */
-  public async modifyAccount(newAccount: Account): Promise<Account | null> {
-    await this.loadingPromise
-    const current = this.accounts.find(
-      a => isSameSignIn(a, newAccount) && a.id === newAccount.id
-    )
-    if (current === undefined) {
-      log.warn(
-        `Account not found in store when trying to modify: ${newAccount.login}`
-      )
-      return null
-    }
-    try {
-      return await this.credentials.add(newAccount, {
-        accessToken: newAccount.token,
-      })
-    } catch (e) {
-      log.error(`Error modifying account '${newAccount.login}'`, e)
-      this.emitCredentialStorageError(e)
-      return null
-    }
   }
 
   /** Refresh all accounts by fetching their latest info from the API. */
@@ -574,18 +572,17 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     const rawAccounts = migratedAccounts ?? parsedAccounts
 
     const needsApiTypeBackfill = rawAccounts.some(a => a.apiType === undefined)
+    const hasLegacyCredentials = rawAccounts.some(hasLegacyCredentialFields)
 
     // Duplicate sign-ins keep the last entry.
     const accountsByKey = new Map<string, Account>()
     let removedInvalidAccounts = false
-    for (const account of rawAccounts) {
+    for (const [index, account] of rawAccounts.entries()) {
       const accountWithoutToken = new Account(
         account.login,
         account.endpoint,
         account.apiType ?? deriveApiType(account.endpoint),
         '',
-        account.refreshToken,
-        account.tokenExpiresAt,
         account.emails,
         account.avatarURL,
         account.id,
@@ -598,26 +595,40 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
       const key = getKeyForAccount(accountWithoutToken)
       try {
         const stored = await this.secureStore.getItem(key, account.login)
-        const credential = deserializeAccountCredential(stored)
+        const credential = await this.restoreLegacyCredential(
+          accountWithoutToken,
+          account,
+          stored,
+          deserializeAccountCredential(stored)
+        )
+        if (credential === undefined) {
+          continue
+        }
         if (credential === null && stored !== null) {
           removedInvalidAccounts = true
           try {
             await this.secureStore.deleteItem(key, account.login)
           } catch (e) {
-            log.error('Unable to remove unusable GitHub credentials.', e)
-            this.emitError(
-              new Error('Unable to remove unusable GitHub credentials.')
-            )
+            log.error('Unable to remove unusable credentials.', e)
+            this.emitError(new Error('Unable to remove unusable credentials.'))
           }
           continue
         }
         const loaded = accountWithoutToken.withToken(
           credential?.accessToken ?? ''
         )
-        const restored = this.credentials.restore(loaded, credential)
+        const restored = this.credentials.restore(
+          loaded,
+          credential,
+          credential !== null
+        )
         accountsByKey.set(getSignInKey(restored), restored)
       } catch (e) {
         log.error(`Error getting token for '${key}'. Skipping.`, e)
+        this.unloadedUsers.set(
+          getPersistedUserKey(parsedAccounts[index]),
+          getPersistedUserKey(account)
+        )
 
         this.emitError(e)
       }
@@ -628,6 +639,7 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     if (
       migratedAccounts !== null ||
       needsApiTypeBackfill ||
+      hasLegacyCredentials ||
       removedInvalidAccounts
     ) {
       this.save() // Save already emits an update
@@ -636,11 +648,42 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     }
   }
 
+  /** Returns undefined if another app window removed the account meanwhile. */
+  private async restoreLegacyCredential(
+    account: Account,
+    persisted: IAccount,
+    stored: string | null,
+    credential: AccountCredential
+  ): Promise<AccountCredential | undefined> {
+    const migration = await migrateLegacyCredential(
+      this.secureStore,
+      getKeyForAccount(account),
+      account,
+      persisted,
+      stored,
+      credential
+    )
+    if (migration.pending) {
+      this.pendingLegacyCredentials.add(getSignInKey(account))
+    }
+    return migration.removed ? undefined : migration.credential
+  }
+
   private save() {
     const usersWithoutTokens = this.accounts.map(account =>
       account.withToken('')
     )
-    this.dataStore.setItem('users', JSON.stringify(usersWithoutTokens))
+    this.dataStore.setItem(
+      'users',
+      JSON.stringify(
+        withPersistedUsers(
+          usersWithoutTokens,
+          this.dataStore.getItem('users'),
+          a => this.pendingLegacyCredentials.has(getSignInKey(a)),
+          this.unloadedUsers
+        )
+      )
+    )
 
     this.emitUpdate(this.accounts)
   }
@@ -657,8 +700,6 @@ async function updatedAccount(account: Account): Promise<Account> {
     account.endpoint,
     account.apiType,
     account.token,
-    account.refreshToken,
-    account.tokenExpiresAt,
     account.login
   )
 }

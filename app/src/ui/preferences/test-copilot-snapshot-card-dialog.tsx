@@ -211,8 +211,6 @@ export class TestCopilotSnapshotCardDialog extends React.Component<
       this.state.endpoint.trim() || 'https://api.github.com',
       deriveApiType(this.state.endpoint.trim() || 'https://api.github.com'),
       'fake-token',
-      'fake-refresh-token',
-      0,
       [],
       this.state.avatarURL.trim(),
       1,

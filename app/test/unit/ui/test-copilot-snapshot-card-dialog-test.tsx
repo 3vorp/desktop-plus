@@ -13,8 +13,6 @@ function makeAccount(): Account {
     'https://enterprise.example.com/api/v3',
     'enterprise',
     'token',
-    'refreshToken',
-    0,
     [],
     'https://avatars.githubusercontent.com/u/2',
     2,

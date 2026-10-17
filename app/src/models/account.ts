@@ -1,6 +1,7 @@
 import { getDotComAPIEndpoint, getHTMLURL, IAPIEmail } from '../lib/api'
 
 export const CopilotLicenseTypeNoAccess = 'NO_ACCESS'
+
 /**
  * Returns a value indicating whether two account instances
  * can be considered equal. Equality is determined by comparing
@@ -38,8 +39,6 @@ export class Account {
       getDotComAPIEndpoint(),
       'dotcom',
       '',
-      '',
-      0,
       [],
       '',
       -1,
@@ -57,8 +56,6 @@ export class Account {
    * @param endpoint The server for this account - GitHub or a GitHub Enterprise instance
    * @param token The access token used to perform operations on behalf of this account
    * @param apiType The API type of the provider this account belongs to.
-   * @param refreshToken The refresh token used to obtain a new access token
-   * @param tokenExpiresAt The expiration time of the access token, in milliseconds since the epoch
    * @param emails The current list of email addresses associated with the account
    * @param avatarURL The profile URL to render for this account
    * @param id The GitHub.com or GitHub Enterprise database id for this account.
@@ -74,8 +71,6 @@ export class Account {
     public readonly endpoint: string,
     public readonly apiType: AccountAPIType,
     public readonly token: string,
-    public readonly refreshToken: string,
-    public readonly tokenExpiresAt: number,
     public readonly emails: ReadonlyArray<IAPIEmail>,
     public readonly avatarURL: string,
     public readonly id: number,
@@ -93,32 +88,6 @@ export class Account {
       this.endpoint,
       this.apiType,
       token,
-      this.refreshToken,
-      this.tokenExpiresAt,
-      this.emails,
-      this.avatarURL,
-      this.id,
-      this.name,
-      this.plan,
-      this.copilotEndpoint,
-      this.isCopilotDesktopEnabled,
-      this.features,
-      this.copilotLicenseType
-    )
-  }
-
-  public withRefreshToken(
-    token: string,
-    refreshToken: string,
-    tokenExpiresAt: number
-  ): Account {
-    return new Account(
-      this.login,
-      this.endpoint,
-      this.apiType,
-      token,
-      refreshToken,
-      tokenExpiresAt,
       this.emails,
       this.avatarURL,
       this.id,

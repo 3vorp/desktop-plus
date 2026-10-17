@@ -41,8 +41,6 @@ function createDotComAccount(login = 'octocat'): Account {
     getDotComAPIEndpoint(),
     'dotcom',
     'test-token',
-    '',
-    0,
     [],
     'https://avatars.githubusercontent.com/u/1',
     1,
@@ -60,8 +58,6 @@ function createEnterpriseAccount(
     endpoint,
     'enterprise',
     'ent-token',
-    '',
-    0,
     [],
     '',
     2,
@@ -75,7 +71,7 @@ function createSelfHostedAccount(
   endpoint: string,
   apiType: SelfHostedApiType
 ): Account {
-  return new Account(login, endpoint, apiType, 'pat', '', 0, [], '', 3, login)
+  return new Account(login, endpoint, apiType, 'pat', [], '', 3, login)
 }
 
 /** Serve every request from the given handler for the duration of `fn`. */
@@ -578,7 +574,7 @@ describe('SignInStore', () => {
         assert.equal(account.apiType, 'gitlab')
         assert.equal(account.endpoint, 'https://git.example.com/api/v4')
         assert.equal(account.token, 'pat-1234')
-        assert.equal(account.refreshToken, '')
+        assert.ok(!accountsStore.isRefreshable(account))
         assert.deepEqual(await accountsStore.getAll(), [account])
       }
     })

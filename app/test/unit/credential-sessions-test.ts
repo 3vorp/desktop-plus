@@ -19,8 +19,6 @@ const account = new Account(
   'https://api.github.com',
   'dotcom',
   'old-access',
-  '',
-  0,
   [],
   '',
   1,
@@ -382,7 +380,7 @@ describe('CredentialSessions', () => {
 
       await assert.rejects(sessions.leaseToken(account, 'git'), {
         message:
-          'Unable to renew your GitHub session. Check your connection and try again shortly.',
+          'Unable to renew your session. Check your connection and try again shortly.',
       })
       assert.deepEqual(signedOut, [])
     })
@@ -407,8 +405,6 @@ describe('CredentialSessions', () => {
       account.endpoint,
       'dotcom',
       'other-access',
-      '',
-      0,
       [],
       '',
       2,

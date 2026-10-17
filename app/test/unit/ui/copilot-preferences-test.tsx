@@ -58,8 +58,6 @@ function makeAccount(options: IAccountOptions = {}): Account {
     options.endpoint ?? 'https://api.github.com',
     deriveApiType(options.endpoint ?? 'https://api.github.com'),
     'token',
-    'refreshToken',
-    0,
     [],
     options.avatarURL ?? 'https://avatars.githubusercontent.com/u/1',
     options.id ?? 1,

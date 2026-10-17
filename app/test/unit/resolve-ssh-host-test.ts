@@ -190,8 +190,6 @@ describe('resolveSSHRemoteAlias', () => {
         'https://gitlab.companyname.de/api/v4',
         'gitlab',
         '',
-        '',
-        0,
         [],
         '',
         1,

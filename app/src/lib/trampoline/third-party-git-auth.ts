@@ -1,6 +1,5 @@
 import { Account } from '../../models/account'
 import { IGitAccount } from '../../models/git-account'
-import { API } from '../api'
 
 /**
  * Username that Bitbucket requires for HTTP basic auth when the password is an
@@ -22,45 +21,33 @@ const GitLabOAuthUsername = 'oauth2'
  *
  * GitHub (and GHE) accepts `login:token`, but the third-party providers
  * require a specific username when authenticating with an OAuth access token.
- * Additionally, third-party OAuth access tokens are short-lived, so refresh
- * them if needed before handing them to git: unlike API requests, git
- * operations may happen after a long idle period without anything else having
- * triggered a refresh.
+ * The account must carry a token from `AccountsStore.leaseAccountToken`, which
+ * renews short-lived tokens and keeps them from being revoked while git uses
+ * them.
  */
-export async function accountToGitCredential(
-  account: Account
-): Promise<IGitAccount> {
+export function accountToGitCredential(account: Account): IGitAccount {
   switch (account.apiType) {
     case 'bitbucket':
       return {
         login: BitbucketOAuthUsername,
         endpoint: account.endpoint,
-        token: await getFreshToken(account),
+        token: account.token,
       }
     case 'gitlab':
       return {
         login: GitLabOAuthUsername,
         endpoint: account.endpoint,
-        token: await getFreshToken(account),
+        token: account.token,
       }
     case 'forgejo':
     case 'gitea':
       return {
         login: account.login,
         endpoint: account.endpoint,
-        token: await getFreshToken(account),
+        token: account.token,
       }
     default:
       return account
-  }
-}
-
-async function getFreshToken(account: Account): Promise<string> {
-  try {
-    return await API.fromAccount(account).ensureFreshToken()
-  } catch (e) {
-    log.warn(`Could not refresh token for ${account.login}`, e)
-    return account.token
   }
 }
 

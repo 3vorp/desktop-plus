@@ -158,8 +158,6 @@ describe('Refreshable credentials in Git', () => {
       'http://github.test/api/v3',
       'enterprise',
       'initial-access',
-      '',
-      0,
       [],
       '',
       1,

@@ -85,8 +85,6 @@ describe('NotificationsStore', async () => {
         endpoint,
         'dotcom',
         'test-token',
-        '',
-        0,
         [createMockAPIEmail(commit.author.email)],
         '',
         1,

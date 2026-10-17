@@ -1,28 +1,78 @@
 import { ISecureStore } from './stores/stores'
 import { getKeyForAccount } from './auth'
 import { Account, accountEquals } from '../models/account'
-import { deleteToken, getHTMLURL } from './api'
+import { getHTMLURL } from './api'
 import {
   IOAuthToken,
   OAuthRefreshRejectedError,
   OAuthTokenResponseError,
-  refreshOAuthToken,
 } from './oauth-token'
 import {
   AccountCredential,
+  deserializeAccountCredential,
   serializeAccountCredential,
 } from './account-credential'
+import {
+  renewAccountToken,
+  revokeAccountToken,
+  RevocableToken,
+} from './third-party-oauth-token'
+import { sleep } from './promise'
 
 /** Renew credentials that expire within this window before handing them out. */
 export const refreshMargin = 10 * 60 * 1000
 /** Stop waiting for a leased token's holders once it is this close to expiring. */
 const leasedRenewalMargin = 60 * 1000
 const revocationTimeout = 30_000
+/** Wait this long before renewing again after a rejected token failed to renew. */
+const recoveryRetryInterval = 60_000
+const maxRenewalJitter = 5 * 60 * 1000
+
+/**
+ * Keeps a window from consuming a single-use refresh token that another app
+ * window renews at the same time. Windows have their own sessions but share
+ * secure storage.
+ */
+export interface IRenewalTiming {
+  /** Added to every renewal margin, so windows rarely renew at the same time. */
+  readonly renewalJitter: number
+  /**
+   * After the provider rejects this window's refresh token, secure storage is
+   * read again after these delays, in case another window's concurrent
+   * renewal is still being saved.
+   */
+  readonly rereadDelays: ReadonlyArray<number>
+  readonly wait: (milliseconds: number) => Promise<void>
+}
+
+export const immediateRenewalTiming: IRenewalTiming = {
+  renewalJitter: 0,
+  rereadDelays: [],
+  wait: () => Promise.resolve(),
+}
+
+let installedRenewalTiming: IRenewalTiming | undefined
+
+export function installRenewalTiming(timing: IRenewalTiming) {
+  installedRenewalTiming = timing
+}
+
+export function getDefaultRenewalTiming(): IRenewalTiming {
+  return installedRenewalTiming ?? immediateRenewalTiming
+}
+
+export function createRenewalTiming(random = Math.random): IRenewalTiming {
+  return {
+    renewalJitter: Math.floor(random() * maxRenewalJitter),
+    rereadDelays: [1_000, 1_500],
+    wait: sleep,
+  }
+}
 
 /** Authentication cannot proceed until the user signs in again. */
 export class AccountRequiresSignInError extends Error {
   public constructor() {
-    super('Your GitHub session could not be renewed. Please sign in again.')
+    super('Your session could not be renewed. Please sign in again.')
   }
 }
 
@@ -35,6 +85,16 @@ interface ICredentialSession {
   readonly leases: Set<ILease>
   /** Callers waiting for a leased token to be released or the session to retire. */
   readonly leaseWaiters: Set<() => void>
+  /** The credential this session was signed out for being unusable, if any. */
+  signedOutCredential?: AccountCredential
+  isStored?: boolean
+  /**
+   * A token this session obtained because its predecessor was rejected, by
+   * renewing or adopting another window's pair. It is never renewed again.
+   */
+  recoveredToken?: string
+  /** The last renewal attempted for a rejected token, which failed. */
+  failedRecovery?: { readonly token: string; readonly at: number }
 }
 
 type SignIn = Pick<Account, 'endpoint' | 'login'>
@@ -75,6 +135,9 @@ export interface ICredentialSessionsDelegate {
    * disagrees with the installed session.
    */
   readonly onSignedIn: (account: Account) => void
+
+  /** Another app window removed the account, so its credential is already gone. */
+  readonly onRemovedElsewhere?: (account: Account) => void
 }
 
 /**
@@ -104,9 +167,10 @@ export class CredentialSessions {
   public constructor(
     private readonly secureStore: ISecureStore,
     private readonly delegate: ICredentialSessionsDelegate,
-    private readonly renewToken = refreshOAuthToken,
+    private readonly renewToken = renewAccountToken,
     private readonly now = Date.now,
-    private readonly revokeToken = deleteToken
+    private readonly revokeToken = revokeAccountToken,
+    private readonly timing = getDefaultRenewalTiming()
   ) {}
 
   /**
@@ -115,7 +179,11 @@ export class CredentialSessions {
    * An already-associated snapshot keeps its original session; restoring it
    * again creates a distinct snapshot, even when its token is unchanged.
    */
-  public restore(account: Account, credential: AccountCredential): Account {
+  public restore(
+    account: Account,
+    credential: AccountCredential,
+    isStored = false
+  ): Account {
     const restored = this.sessionsByAccount.has(account)
       ? account.withToken(account.token)
       : account
@@ -125,6 +193,7 @@ export class CredentialSessions {
       retired: false,
       leases: new Set(),
       leaseWaiters: new Set(),
+      isStored,
     }
     this.retireSession(account)
     this.sessionsBySignIn.set(this.signInKey(account), session)
@@ -160,7 +229,7 @@ export class CredentialSessions {
       // Swap inside the write so a renewal of the replaced session queued
       // behind it sees the retirement and cannot overwrite this credential.
       this.retireSession(account)
-      this.restore(authenticated, credential)
+      this.restore(authenticated, credential, true)
       if (!this.sessionsByAccount.has(account)) {
         this.inheritSession(authenticated, account)
       }
@@ -184,6 +253,9 @@ export class CredentialSessions {
     return this.write(this.signInKey(account), async () => {
       const current = this.getSession(account)
       if (current?.account.login === account.login) {
+        return
+      }
+      if (await this.hasNewerStoredCredential(account)) {
         return
       }
       await this.secureStore.deleteItem(
@@ -440,10 +512,79 @@ export class CredentialSessions {
         return
       }
     }
+    if (await this.recoverRejectedToken(session, token)) {
+      return
+    }
     const retired = await this.requireSignIn(session)
     if (retired !== null) {
-      void this.revokeUnusedToken(retired)
+      void this.revokeUnusedToken({
+        endpoint: retired.endpoint,
+        apiType: retired.apiType,
+        token: retired.token,
+        hasRefreshToken:
+          session.signedOutCredential?.refreshToken !== undefined,
+      })
     }
+  }
+
+  /**
+   * Keep a session whose current token was rejected if it can still be
+   * used: another app window may have rotated the pair (which revokes the
+   * old access token on some providers), and a rotating pair is renewed once
+   * before giving up on it.
+   */
+  private async recoverRejectedToken(
+    session: ICredentialSession,
+    token: string
+  ): Promise<boolean> {
+    const credential = session.credential
+    if (credential === null) {
+      return false
+    }
+    // A recovered token is never renewed again, but the window whose renewal
+    // revoked it may still be saving the new pair.
+    const adopted =
+      session.recoveredToken === token && credential.refreshToken !== undefined
+        ? await this.adoptConcurrentRenewal(session, credential)
+        : await this.adoptStoredCredential(session, credential)
+    if (adopted !== null) {
+      // Windows must not keep handing each other replacements forever.
+      session.recoveredToken = adopted.accessToken
+      return true
+    }
+    if (session.credential !== credential) {
+      return true
+    }
+    // A renewal started meanwhile will replace the token.
+    if (session.refreshing !== undefined) {
+      return true
+    }
+    if (
+      credential.refreshToken === undefined ||
+      session.recoveredToken === token
+    ) {
+      return false
+    }
+    const failed = session.failedRecovery
+    if (
+      failed?.token === token &&
+      failed.at + recoveryRetryInterval > this.now()
+    ) {
+      return true
+    }
+    session.failedRecovery = { token, at: this.now() }
+    const renewing = this.rotate(session, credential)
+    session.refreshing = renewing
+    try {
+      session.recoveredToken = await renewing
+    } catch {
+      // Renewal signs out when the pair is rejected, and keeps it otherwise.
+    } finally {
+      if (session.refreshing === renewing) {
+        session.refreshing = undefined
+      }
+    }
+    return true
   }
 
   /**
@@ -452,9 +593,7 @@ export class CredentialSessions {
    * Cleanup is bounded and failures are logged. Callers need not await it, but
    * must only pass credentials that have not been installed for an account.
    */
-  public async revokeUnusedToken(
-    account: Pick<Account, 'endpoint' | 'token'>
-  ): Promise<void> {
+  public async revokeUnusedToken(account: RevocableToken): Promise<void> {
     const controller = new AbortController()
     let timeout: ReturnType<typeof setTimeout> | undefined
     const deadline = new Promise<never>((_, reject) => {
@@ -513,7 +652,116 @@ export class CredentialSessions {
     if (this.getSession(session.account) !== session) {
       return Promise.resolve(null)
     }
+    session.signedOutCredential = session.credential
     return this.delegate.requireSignIn(session.account)
+  }
+
+  /**
+   * Another app window may have rotated the pair this session holds, or
+   * removed the account if the stored credential is gone.
+   */
+  private async adoptStoredCredential(
+    session: ICredentialSession,
+    current: AccountCredential
+  ): Promise<IOAuthToken | null> {
+    const { account } = session
+    let stored: AccountCredential
+    try {
+      stored = deserializeAccountCredential(
+        await this.secureStore.getItem(getKeyForAccount(account), account.login)
+      )
+    } catch {
+      return null
+    }
+    if (session.retired || session.credential !== current) {
+      return null
+    }
+    if (stored === null) {
+      if (current !== null && session.isStored) {
+        this.retireRemovedSession(session)
+      }
+      return null
+    }
+    if (stored.accessToken === current?.accessToken) {
+      return null
+    }
+    session.credential = stored
+    session.isStored = true
+    this.sessionsByToken.set(
+      this.tokenKey(account.endpoint, stored.accessToken),
+      session
+    )
+    this.delegate.onTokenRenewed(
+      account.endpoint,
+      stored.accessToken,
+      account.login
+    )
+    log.info('Adopted OAuth credentials saved by another window.')
+    return stored
+  }
+
+  /**
+   * Another app window's concurrent renewal can be saved shortly after the
+   * provider rejected this window's refresh token.
+   */
+  private async adoptConcurrentRenewal(
+    session: ICredentialSession,
+    current: IOAuthToken
+  ): Promise<IOAuthToken | null> {
+    const delays = this.timing.rereadDelays
+    for (let attempt = 0; ; attempt++) {
+      await this.adoptStoredCredential(session, current)
+      if (
+        session.retired ||
+        session.credential !== current ||
+        attempt >= delays.length
+      ) {
+        break
+      }
+      await this.timing.wait(delays[attempt])
+    }
+    return session.credential === current ? null : session.credential
+  }
+
+  private retireRemovedSession(session: ICredentialSession) {
+    if (this.getSession(session.account) !== session) {
+      return
+    }
+    log.info('Removing an account that was removed in another window.')
+    this.delegate.onRemovedElsewhere?.(session.account)
+    this.retireSession(session.account)
+  }
+
+  /**
+   * Another app window may have saved a new credential since this account was
+   * signed out. Removing an account on purpose always deletes it.
+   */
+  private async hasNewerStoredCredential(account: Account): Promise<boolean> {
+    const signedOut = this.sessionsByAccount.get(account)?.signedOutCredential
+    if (signedOut === undefined) {
+      return false
+    }
+    let value: string | null
+    try {
+      value = await this.secureStore.getItem(
+        getKeyForAccount(account),
+        account.login
+      )
+    } catch {
+      // Unknown contents: leaving them is safer than deleting a newer sign-in.
+      return true
+    }
+    let stored: AccountCredential
+    try {
+      stored = deserializeAccountCredential(value)
+    } catch {
+      return false
+    }
+    if (stored !== null && stored.accessToken !== signedOut?.accessToken) {
+      log.info('Keeping OAuth credentials saved by another window.')
+      return true
+    }
+    return false
   }
 
   private async validToken(
@@ -536,7 +784,8 @@ export class CredentialSessions {
     if (
       credential.refreshToken === undefined ||
       (credential.expiresAt !== undefined &&
-        credential.expiresAt > this.now() + minimumValidity)
+        credential.expiresAt >
+          this.now() + minimumValidity + this.timing.renewalJitter)
     ) {
       return credential.accessToken
     }
@@ -574,11 +823,40 @@ export class CredentialSessions {
       .map(l => l.holder)
   }
 
+  private revokeUnusedRenewal(account: Account, renewed: IOAuthToken) {
+    void this.revokeUnusedToken({
+      endpoint: account.endpoint,
+      apiType: account.apiType,
+      token: renewed.accessToken,
+      hasRefreshToken: true,
+    })
+  }
+
+  private needsRenewal(credential: IOAuthToken) {
+    return (
+      credential.refreshToken !== undefined &&
+      (credential.expiresAt === undefined ||
+        credential.expiresAt <=
+          this.now() + refreshMargin + this.timing.renewalJitter)
+    )
+  }
+
   private async rotate(
     session: ICredentialSession,
     credential: IOAuthToken
   ): Promise<string> {
     const { account } = session
+    // Another app window may have renewed the pair since this one read it.
+    await this.adoptStoredCredential(session, credential)
+    const current = session.credential
+    if (session.retired || current === null) {
+      throw new AccountRequiresSignInError()
+    }
+    if (current !== credential) {
+      return this.needsRenewal(current)
+        ? this.rotate(session, current)
+        : current.accessToken
+    }
     const refreshToken = credential.refreshToken
     if (refreshToken === undefined) {
       throw new Error('Cannot renew a credential without a refresh token.')
@@ -587,7 +865,8 @@ export class CredentialSessions {
     try {
       renewed = await this.renewToken(
         getHTMLURL(account.endpoint),
-        refreshToken
+        refreshToken,
+        account
       )
     } catch (e) {
       if (!session.retired) {
@@ -595,13 +874,20 @@ export class CredentialSessions {
           e instanceof OAuthRefreshRejectedError ||
           e instanceof OAuthTokenResponseError
         ) {
+          const concurrent = await this.adoptConcurrentRenewal(
+            session,
+            credential
+          )
+          if (concurrent !== null) {
+            return concurrent.accessToken
+          }
           await this.requireSignIn(session)
         } else {
           log.warn(
             'OAuth renewal failed; retaining credentials for a later retry.'
           )
           throw new Error(
-            'Unable to renew your GitHub session. Check your connection and try again shortly.'
+            'Unable to renew your session. Check your connection and try again shortly.'
           )
         }
       }
@@ -609,7 +895,7 @@ export class CredentialSessions {
     }
 
     if (session.retired) {
-      void this.revokeUnusedToken(account.withToken(renewed.accessToken))
+      this.revokeUnusedRenewal(account, renewed)
       throw new AccountRequiresSignInError()
     }
     try {
@@ -627,16 +913,17 @@ export class CredentialSessions {
       if (!session.retired) {
         await this.requireSignIn(session)
       }
-      void this.revokeUnusedToken(account.withToken(renewed.accessToken))
+      this.revokeUnusedRenewal(account, renewed)
       throw new Error(
-        'Unable to save renewed GitHub credentials. Please sign in again.'
+        'Unable to save renewed credentials. Please sign in again.'
       )
     }
     if (session.retired) {
-      void this.revokeUnusedToken(account.withToken(renewed.accessToken))
+      this.revokeUnusedRenewal(account, renewed)
       throw new AccountRequiresSignInError()
     }
     session.credential = renewed
+    session.isStored = true
     this.sessionsByToken.set(
       this.tokenKey(account.endpoint, renewed.accessToken),
       session
