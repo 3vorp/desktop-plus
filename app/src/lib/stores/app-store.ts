@@ -506,7 +506,7 @@ import {
 import { resolveWithin } from '../path'
 import { WorktreeEntry } from '../../models/worktree'
 import { shouldShowWorktreeDropdown } from '../worktree-dropdown'
-import type { Model } from '@github/copilot-sdk/dist/generated/rpc'
+import type { Model } from '../copilot/types'
 
 const LastSelectedRepositoryIDKey = 'last-selected-repository-id'
 
@@ -9915,7 +9915,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private async isUsingLFS(repository: Repository): Promise<boolean> {
     try {
       return await isUsingLFS(repository)
-    } catch (error) {
+    } catch {
       return false
     }
   }
@@ -10727,6 +10727,19 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
 
     await this.currentBranchPruner.testPrune()
+  }
+
+  /** This shouldn't be called directly. See 'Dispatcher'. */
+  public _getAccountTokenExpirationForTesting(account: Account) {
+    return this.accountsStore.getTokenExpirationForTesting(account)
+  }
+
+  /** This shouldn't be called directly. See 'Dispatcher'. */
+  public _setAccountTokenExpirationForTesting(
+    account: Account,
+    expiresAt: number | undefined
+  ) {
+    return this.accountsStore.setTokenExpirationForTesting(account, expiresAt)
   }
 
   public async _showCreateForkDialog(

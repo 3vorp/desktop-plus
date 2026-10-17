@@ -31,7 +31,7 @@ export function run(spawnOptions: SpawnOptions, launchArgs: string[]) {
     if (!stats.isFile()) {
       return null
     }
-  } catch (e) {
+  } catch {
     return null
   }
 

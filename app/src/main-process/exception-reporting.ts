@@ -119,7 +119,7 @@ export async function reportError(
       request.end(body)
     })
     log.info('Error report submitted')
-  } catch (e) {
+  } catch {
     log.error('Failed submitting error report', error)
   }
 }

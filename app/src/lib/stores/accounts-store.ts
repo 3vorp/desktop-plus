@@ -38,6 +38,7 @@ import { deserializeAccountCredential } from '../account-credential'
 import {
   AccountRequiresSignInError,
   CredentialSessions,
+  IAccountTokenExpiration,
   refreshMargin,
 } from '../credential-sessions'
 import { ChunkedSecureStore } from './chunked-secure-store'
@@ -287,6 +288,23 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     return this.credentials.isRefreshable(account)
   }
 
+  /** Read test-dialog expiry metadata without acquiring or refreshing a token. */
+  public async getTokenExpirationForTesting(
+    account: Account
+  ): Promise<IAccountTokenExpiration> {
+    await this.loadingPromise
+    return this.credentials.getTokenExpirationForTesting(account)
+  }
+
+  /** Apply or reset a session-only access-token expiry override for testing. */
+  public async setTokenExpirationForTesting(
+    account: Account,
+    expiresAt: number | undefined
+  ): Promise<IAccountTokenExpiration> {
+    await this.loadingPromise
+    return this.credentials.setTokenExpirationForTesting(account, expiresAt)
+  }
+
   /**
    * Bind fresh access tokens and expiry metadata to the account's issuing session.
    *
@@ -321,6 +339,9 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     if (retired === null) {
       return null
     }
+    log.info(
+      `[AccountsStore] signing out account ${retired.login} (${retired.name}) because its credentials can no longer be used`
+    )
     this.emitter.emit(
       'token-invalidated',
       this.credentials.inheritSession(account, account.withToken(''))

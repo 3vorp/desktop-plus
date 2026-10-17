@@ -25,6 +25,7 @@ import {
   getEndpointVersion,
   isDotCom,
   isGHE,
+  isGHES,
   updateEndpointVersion,
 } from './endpoint-capabilities'
 import {
@@ -36,6 +37,7 @@ import { urlWithoutCredentials } from './trampoline/url-without-credentials'
 import { CopilotError, parseCopilotPaymentRequiredError } from './copilot-error'
 import { BypassReasonType } from '../ui/secret-scanning/bypass-push-protection-dialog'
 import { assertNever } from './fatal-error'
+import { enableShortLivedTokens } from './feature-flag'
 
 const envEndpoint = process.env['DESKTOP_GITHUB_DOTCOM_API_ENDPOINT']
 const envHTMLURL = process.env['DESKTOP_GITHUB_DOTCOM_HTML_URL']
@@ -2331,7 +2333,7 @@ export class API {
     const response = await this.ghRequest('GET', path, { customHeaders })
     try {
       return await parsedResponse<IAPIWorkflowRuns>(response)
-    } catch (err) {
+    } catch {
       log.debug(
         `Failed fetching workflow runs for ${branchName} (${owner}/${name})`
       )
@@ -2368,7 +2370,7 @@ export class API {
       if (apiWorkflowRuns.workflow_runs.length > 0) {
         return apiWorkflowRuns.workflow_runs[0]
       }
-    } catch (err) {
+    } catch {
       log.debug(
         `Failed fetching workflow runs for ${checkSuiteId} (${owner}/${name})`
       )
@@ -2393,7 +2395,7 @@ export class API {
     })
     try {
       return await parsedResponse<IAPIWorkflowJobs>(response)
-    } catch (err) {
+    } catch {
       log.debug(
         `Failed fetching workflow jobs (${owner}/${name}) workflow run: ${workflowRunId}`
       )
@@ -2496,7 +2498,7 @@ export class API {
 
     try {
       return await parsedResponse<IAPICheckSuite>(response)
-    } catch (_) {
+    } catch {
       log.debug(
         `[fetchCheckSuite] Failed fetch check suite id ${checkSuiteId} (${owner}/${name})`
       )
@@ -3450,10 +3452,16 @@ function pkceChallengeParams(codeChallenge: string): string {
 export function getOAuthAuthorizationURL(
   endpoint: string,
   state: string,
-  codeChallenge: string
+  codeChallenge: string,
+  shortLived = enableShortLivedTokens()
 ): string {
   const urlBase = getHTMLURL(endpoint)
-  const scope = encodeURIComponent(oauthScopes.join(' '))
+  const scope = encodeURIComponent(
+    (shortLived && !isGHES(endpoint)
+      ? [...oauthScopes, 'offline_access']
+      : oauthScopes
+    ).join(' ')
+  )
   const pkceParams = pkceChallengeParams(codeChallenge)
 
   return new window.URL(
