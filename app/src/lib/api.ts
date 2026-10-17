@@ -1671,13 +1671,28 @@ interface IBitbucketAPIWorkspace {
  * An object for making authenticated requests to the GitHub API
  */
 export class API {
+  private static tokenProvider:
+    | ((endpoint: string, token: string) => Promise<string>)
+    | undefined
   private static readonly tokenInvalidatedListeners =
     new Set<TokenInvalidatedCallback>()
   private static readonly tokenRefreshedListeners =
     new Set<TokenRefreshedCallback>()
 
+  /** Install the renderer's shared credential authority. Returns a cleanup function. */
+  public static setTokenProvider(
+    provider: (endpoint: string, token: string) => Promise<string>
+  ) {
+    const previous = this.tokenProvider
+    this.tokenProvider = provider
+    return () => {
+      this.tokenProvider = previous
+    }
+  }
+
   public static onTokenInvalidated(callback: TokenInvalidatedCallback) {
     this.tokenInvalidatedListeners.add(callback)
+    return () => this.tokenInvalidatedListeners.delete(callback)
   }
 
   public static onTokenRefreshed(callback: TokenRefreshedCallback) {
@@ -1708,6 +1723,7 @@ export class API {
 
   /** Create a new API client from the given account. */
   public static fromAccount(account: Account): API {
+    // Public-repository fallback must not inherit an unrelated account's sign-in state.
     return instantiateAPI(
       account.apiType,
       account.endpoint,
@@ -1715,7 +1731,8 @@ export class API {
       account.login,
       account.refreshToken,
       account.tokenExpiresAt,
-      account.copilotEndpoint
+      account.copilotEndpoint,
+      account.id !== -1
     )
   }
 
@@ -1730,7 +1747,13 @@ export class API {
     endpoint: string,
     token: string,
     login: string | UnknownLogin,
-    copilotEndpoint?: string
+    copilotEndpoint?: string,
+    /**
+     * Use the account store to resolve/refresh tokens and handle rejected tokens.
+     * Disable for the anonymous public-repository fallback: it must use the
+     * supplied token, not another signed-in account's token.
+     */
+    private readonly manageAccountToken = true
   ) {
     this.endpoint = endpoint
     this.token = token
@@ -2798,10 +2821,11 @@ export class API {
     method: HTTPMethod,
     path: string,
     options: {
-      body?: Object
-      customHeaders?: Object
+      body?: object
+      customHeaders?: object
       reloadCache?: boolean
-    } = {}
+    } = {},
+    resolvedToken?: string
   ): Promise<Response> {
     const expiration = this.getTokenExpiration()
     if (expiration !== null && expiration.getTime() < Date.now()) {
@@ -2809,9 +2833,14 @@ export class API {
       await this.refreshTokenWithMutex()
     }
 
+    const token =
+      resolvedToken ??
+      (API.tokenProvider && this.manageAccountToken
+        ? await API.tokenProvider(this.endpoint, this.token)
+        : this.token)
     return await request(
       endpoint,
-      this.token,
+      token,
       method,
       path,
       options.body,
@@ -2828,32 +2857,43 @@ export class API {
     method: HTTPMethod,
     path: string,
     options: {
-      body?: Object
-      customHeaders?: Object
+      body?: object
+      customHeaders?: object
       reloadCache?: boolean
     } = {}
   ): Promise<Response> {
-    const response = await this.request(this.endpoint, method, path, options)
+    const token =
+      API.tokenProvider && this.manageAccountToken
+        ? await API.tokenProvider(this.endpoint, this.token)
+        : this.token
+    const response = await this.request(
+      this.endpoint,
+      method,
+      path,
+      options,
+      token
+    )
 
-    this.checkTokenInvalidated(response)
+    this.checkTokenInvalidated(response, token)
 
     tryUpdateEndpointVersionFromResponse(this.endpoint, response)
 
     return response
   }
 
-  protected checkTokenInvalidated(response: Response) {
+  protected checkTokenInvalidated(response: Response, token: string) {
     // Only consider invalid token when the status is 401 and the response has
     // the X-GitHub-Request-Id header, meaning it comes from GH(E) and not from
     // any kind of proxy/gateway. For more info see #12943
     // We're also not considering a token has been invalidated when the reason
     // behind a 401 is the fact that any kind of 2 factor auth is required.
     if (
+      this.manageAccountToken &&
       response.status === HttpStatusCode.Unauthorized &&
       response.headers.has('X-GitHub-Request-Id') &&
       !response.headers.has('X-GitHub-OTP')
     ) {
-      API.emitTokenInvalidated(this.endpoint, this.token, this.login)
+      API.emitTokenInvalidated(this.endpoint, token, this.login)
     }
   }
 
@@ -3218,7 +3258,11 @@ export class API {
   }
 }
 
-export async function deleteToken(account: Account) {
+/** Revoke a token, optionally allowing the caller to cancel the request. */
+export async function deleteToken(
+  account: Pick<Account, 'endpoint' | 'token'>,
+  signal?: AbortSignal
+) {
   try {
     const creds = Buffer.from(`${ClientID}:${ClientSecret}`).toString('base64')
     const response = await request(
@@ -3227,7 +3271,9 @@ export async function deleteToken(account: Account) {
       'DELETE',
       `applications/${ClientID}/token`,
       { access_token: account.token },
-      { Authorization: `Basic ${creds}` }
+      { Authorization: `Basic ${creds}` },
+      false,
+      signal
     )
 
     return response.status === 204
@@ -3838,7 +3884,9 @@ export class BitbucketAPI extends API {
     refreshToken: string,
     expiresAt: number
   ) {
-    super(endpoint, token, login)
+    // These providers refresh their own tokens, so they don't go through the
+    // GitHub credential sessions.
+    super(endpoint, token, login, undefined, false)
     this.apiRefreshToken = refreshToken
     this.expiresAt = expiresAt ? new Date(expiresAt) : null
   }
@@ -4215,7 +4263,9 @@ export class GitLabAPI extends API {
     refreshToken: string,
     expiresAt: number
   ) {
-    super(endpoint, token, login)
+    // These providers refresh their own tokens, so they don't go through the
+    // GitHub credential sessions.
+    super(endpoint, token, login, undefined, false)
     this.apiRefreshToken = refreshToken
     this.expiresAt = expiresAt ? new Date(expiresAt) : null
   }
@@ -4619,7 +4669,9 @@ export class ForgejoAPI extends API {
     refreshToken: string,
     expiresAt: number
   ) {
-    super(endpoint, token, login)
+    // These providers refresh their own tokens, so they don't go through the
+    // GitHub credential sessions.
+    super(endpoint, token, login, undefined, false)
     this.apiRefreshToken = refreshToken
     this.expiresAt = expiresAt ? new Date(expiresAt) : null
   }
@@ -5120,7 +5172,8 @@ function instantiateAPI(
   login: string | UnknownLogin,
   refreshToken: string,
   expiresAt: number,
-  copilotEndpoint: string | undefined
+  copilotEndpoint: string | undefined,
+  manageAccountToken = true
 ): API {
   switch (apiType) {
     case 'bitbucket':
@@ -5133,7 +5186,13 @@ function instantiateAPI(
       return GiteaAPI.get(endpoint, token, login, refreshToken, expiresAt)
     case 'dotcom':
     case 'enterprise':
-      return new API(endpoint, token, login, copilotEndpoint)
+      return new API(
+        endpoint,
+        token,
+        login,
+        copilotEndpoint,
+        manageAccountToken
+      )
     default:
       assertNever(apiType, `Unknown API type ${apiType}`)
   }

@@ -13,7 +13,16 @@ import { Ref } from '../lib/ref'
 import { assertNever } from '../../lib/fatal-error'
 
 interface IInvalidatedTokenProps {
-  readonly dispatcher: Dispatcher
+  readonly dispatcher: Pick<
+    Dispatcher,
+    | 'showEnterpriseSignInDialog'
+    | 'showDotComSignInDialog'
+    | 'showBitbucketSignInDialog'
+    | 'showGitLabSignInDialog'
+    | 'showCodebergSignInDialog'
+    | 'showGiteaSignInDialog'
+    | 'showSelfHostedSignInDialog'
+  >
   readonly account: Account
   readonly onDismissed: () => void
 }
@@ -37,7 +46,7 @@ export class InvalidatedToken extends React.Component<IInvalidatedTokenProps> {
         onDismissed={this.props.onDismissed}
       >
         <DialogContent>
-          Your account token has been invalidated and you have been signed out
+          Your account token is no longer valid and you have been signed out
           from your <Ref>{account.friendlyEndpoint}</Ref> account:{' '}
           <Ref>@{account.login}</Ref>. Do you want to sign in again?
         </DialogContent>

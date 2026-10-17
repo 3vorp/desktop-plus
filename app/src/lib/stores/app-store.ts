@@ -979,7 +979,6 @@ export class AppStore extends TypedBaseStore<IAppState> {
       }
     }, InitialRepositoryIndicatorTimeout)
 
-    API.onTokenInvalidated(this.onTokenInvalidated)
     API.onTokenRefreshed(this.onTokenRefreshed)
 
     this.notificationsStore.onChecksFailedNotification(
@@ -1040,40 +1039,6 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
 
     return zoomFactor
-  }
-
-  private onTokenInvalidated = (
-    endpoint: string,
-    token: string,
-    login: string | UnknownLogin
-  ) => {
-    if (login === UnknownLogin.InitialAuthFetch) {
-      console.error('The token for initial account fetch was invalidated!')
-      return
-    }
-
-    const account = getAccountForEndpoint(this.accounts, endpoint, login)
-
-    if (account === null) {
-      return
-    }
-
-    // If we have a token for the account but it doesn't match the token that
-    // was invalidated that likely means that someone held onto an account for
-    // longer than they should have which is bad but what's even worse is if we
-    // invalidate an active account.
-    if (account.token && account.token !== token) {
-      log.error(`Token for ${endpoint} invalidated but token mismatch`)
-      return
-    }
-
-    // If the token was invalidated for an account, sign out from that account
-    this._removeAccount(account)
-
-    this._showPopup({
-      type: PopupType.InvalidatedToken,
-      account,
-    })
   }
 
   private onTokenRefreshed = async (
@@ -1238,6 +1203,15 @@ export class AppStore extends TypedBaseStore<IAppState> {
       this.emitUpdate()
     })
     this.accountsStore.onDidError(error => this.emitError(error))
+    this.accountsStore.onTokenInvalidated(account => {
+      this.repositoriesStore
+        .clearGitHubRepositoryLoginForEndpointAndLogin(
+          account.endpoint,
+          account.login
+        )
+        .catch(e => log.error('Failed to clear repository login', e))
+      this._showPopup({ type: PopupType.InvalidatedToken, account })
+    })
 
     this.repositoriesStore.onDidUpdate(updateRepositories => {
       this.repositories = updateRepositories
@@ -9610,13 +9584,13 @@ export class AppStore extends TypedBaseStore<IAppState> {
     log.info(
       `[AppStore] removing account ${account.login} (${account.name}) from store`
     )
-    await this.accountsStore.removeAccount(account)
+    const current = await this.accountsStore.removeAccount(account)
     await this.repositoriesStore.clearGitHubRepositoryLoginForEndpointAndLogin(
       account.endpoint,
       account.login
     )
-    if (account.token) {
-      await deleteToken(account)
+    if (current?.token) {
+      await deleteToken(current)
     }
   }
 

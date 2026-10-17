@@ -183,6 +183,11 @@ export class AppWindow {
     return userWantsToHideOnQuit && !this.quitting
   }
 
+  /** The main renderer, used to authenticate and target IPC requests. */
+  public get webContents(): Electron.WebContents {
+    return this.window.webContents
+  }
+
   public load() {
     let startLoad = 0
     // We only listen for the first of the loading events to avoid a bug in

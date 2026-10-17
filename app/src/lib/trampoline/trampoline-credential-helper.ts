@@ -12,6 +12,7 @@ import {
   getCredentialUrl,
   getIsBackgroundTaskEnvironment,
   getTrampolineEnvironmentPath,
+  holdCredentialLease,
   setHasRejectedCredentialsForEndpoint,
 } from './trampoline-environment'
 import { useExternalCredentialHelper } from './use-external-credential-helper'
@@ -33,6 +34,7 @@ import {
   isAccountCredential,
   rememberAccountCredential,
 } from './third-party-git-auth'
+import { AccountRequiresSignInError } from '../credential-sessions'
 
 type Credential = Map<string, string>
 type Store = AccountsStore
@@ -62,10 +64,22 @@ async function getGitHubCredential(
   const account = await findGitHubTrampolineAccount(store, endpoint, login)
   if (account) {
     info(`found GitHub credential for ${endpoint} in store`)
-    rememberAccountCredential(token, getCredentialUrl(cred))
-    return credWithAccount(cred, await accountToGitCredential(account))
+    try {
+      // Git LFS asks again under its parent Git's trampoline token, so it
+      // gets the token that process holds instead of waiting for it.
+      const lease = await store.leaseAccountToken(account, token)
+      holdCredentialLease(token, lease.release)
+      rememberAccountCredential(token, getCredentialUrl(cred))
+      return credWithAccount(cred, await accountToGitCredential(lease.account))
+    } catch (e) {
+      if (!(e instanceof AccountRequiresSignInError)) {
+        throw e
+      }
+      // Fall through to the same path as having no account for the host.
+      info(`GitHub credential for ${endpoint} requires sign in`)
+    }
   }
-  return credWithAccount(cred, account)
+  return undefined
 }
 
 async function promptForCredential(cred: Credential, endpoint: string) {
