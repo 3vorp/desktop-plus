@@ -103,7 +103,7 @@ function getCache(): Map<string, RegisteredEndpoint> {
 
   try {
     raw = localStorage.getItem(StorageKey)
-  } catch (e) {
+  } catch {
     // Unavailable storage: return empty Map
     return (cache ??= new Map())
   }
@@ -137,7 +137,7 @@ function invalidateCache() {
 export function tryGetHost(url: string): string | undefined {
   try {
     return new URL(url).host
-  } catch (e) {
+  } catch {
     return undefined
   }
 }

@@ -120,7 +120,7 @@ export function deduceRepositoryType(url: string): RepoType {
       return registered.apiType
     }
     return 'github'
-  } catch (e) {
+  } catch {
     return 'github'
   }
 }

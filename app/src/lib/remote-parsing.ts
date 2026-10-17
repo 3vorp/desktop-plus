@@ -86,7 +86,7 @@ const remoteRegexes: ReadonlyArray<{ protocol: GitProtocol; regex: RegExp }> = [
 function tryParseUrl(url: string): URL | null {
   try {
     return new URL(url)
-  } catch (e) {
+  } catch {
     return null
   }
 }
