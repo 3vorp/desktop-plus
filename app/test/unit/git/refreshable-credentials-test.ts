@@ -13,6 +13,7 @@ import { trampolineServer } from '../../../src/lib/trampoline/trampoline-server'
 import { trampolineUIHelper } from '../../../src/lib/trampoline/trampoline-ui-helper'
 import { TrampolineCommandIdentifier } from '../../../src/lib/trampoline/trampoline-command'
 import { createCredentialHelperTrampolineHandler } from '../../../src/lib/trampoline/trampoline-credential-helper'
+import { unregisterHost } from '../../../src/lib/endpoint-api-type-registry'
 import { InMemoryStore, AsyncInMemoryStore } from '../../helpers/stores'
 import { setupEmptyRepository } from '../../helpers/repositories'
 import { makeCommit } from '../../helpers/repository-scaffolding'
@@ -101,7 +102,7 @@ async function runReceivePack(
 async function serveRepositories(
   t: TestContext,
   root: string,
-  isValid: (token: string) => boolean,
+  isValid: (token: string, username: string | undefined) => boolean,
   onAuthenticatedRequest: () => Promise<void>
 ) {
   const server = createServer(async (req, res) => {
@@ -113,7 +114,10 @@ async function serveRepositories(
           .slice(1)
           .join(':')
       : undefined
-    if (token === undefined || !isValid(token)) {
+    const username = authorization.startsWith('Basic ')
+      ? Buffer.from(authorization.slice(6), 'base64').toString().split(':')[0]
+      : undefined
+    if (token === undefined || !isValid(token, username)) {
       res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="GitHub"' })
       res.end()
       return
@@ -226,6 +230,88 @@ describe('Refreshable credentials in Git', () => {
     // Once Git has exited, the waiting consumer renews the token.
     assert.ok(otherConsumer)
     assert.equal((await otherConsumer).token, 'renewed-access-1')
+    assert.equal(renewals, 1)
+  })
+
+  it('pushes to a self-hosted GitLab with a renewed OAuth token and its Git username', async t => {
+    t.mock.method(
+      trampolineUIHelper,
+      'getLoginForRepositoryPath',
+      async () => null
+    )
+    t.after(() => unregisterHost('gitlab.test'))
+    let renewals = 0
+    const store = new AccountsStore(
+      new InMemoryStore(),
+      new AsyncInMemoryStore(),
+      async () => {
+        renewals++
+        return {
+          accessToken: 'renewed-access',
+          refreshToken: 'renewed-refresh',
+          expiresAt: Date.now() + 2 * 60 * 60 * 1000,
+        }
+      },
+      Date.now,
+      async () => true
+    )
+    await store.addAccount(
+      new Account(
+        'octocat',
+        'http://gitlab.test/api/v4',
+        'gitlab',
+        'initial-access',
+        [],
+        '',
+        1,
+        'Octocat'
+      ),
+      {
+        accessToken: 'initial-access',
+        refreshToken: 'initial-refresh',
+        expiresAt: Date.now(),
+      }
+    )
+    trampolineServer.registerCommandHandler(
+      TrampolineCommandIdentifier.CredentialHelper,
+      createCredentialHelperTrampolineHandler(store)
+    )
+
+    const root = await createTempDirectory(t)
+    await exec(['init', '--bare', 'remote.git'], root)
+    const port = await serveRepositories(
+      t,
+      root,
+      (token, username) => token === 'renewed-access' && username === 'oauth2',
+      async () => {}
+    )
+
+    const repository = await setupEmptyRepository(t)
+    await makeCommit(repository, {
+      entries: [{ path: 'README.md', contents: 'hello' }],
+      commitMessage: 'initial commit',
+    })
+    const binDir = await installCredentialHelper(t)
+
+    await git(
+      [
+        '-c',
+        `http.proxy=http://127.0.0.1:${port}`,
+        'push',
+        'http://gitlab.test/remote.git',
+        'HEAD:refs/heads/main',
+      ],
+      repository.path,
+      'push',
+      { env: { PATH: `${binDir}${delimiter}${process.env.PATH ?? ''}` } }
+    )
+
+    const local = await exec(['rev-parse', 'HEAD'], repository.path)
+    const remote = await exec(
+      ['--git-dir', join(root, 'remote.git'), 'rev-parse', 'refs/heads/main'],
+      root
+    )
+    assert.equal(remote.stdout, local.stdout)
     assert.equal(renewals, 1)
   })
 })

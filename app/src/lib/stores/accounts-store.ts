@@ -269,6 +269,11 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
   /**
    * Get the account's credential for `holder`, holding off renewal of that
    * token until the lease is released. See `CredentialSessions.leaseToken`.
+   *
+   * Leases only hold off renewal in this app window. Another window never
+   * waits for them, so it can renew, and thereby revoke, a token that a Git
+   * process started from this window still uses once that token is close to
+   * expiring.
    */
   public async leaseAccountToken(
     account: Account,

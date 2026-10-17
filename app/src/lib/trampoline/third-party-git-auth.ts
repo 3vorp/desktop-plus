@@ -1,5 +1,6 @@
 import { Account } from '../../models/account'
 import { IGitAccount } from '../../models/git-account'
+import { isValidTrampolineToken } from './trampoline-tokens'
 
 /**
  * Username that Bitbucket requires for HTTP basic auth when the password is an
@@ -74,6 +75,11 @@ export function rememberAccountCredential(
   trampolineToken: string,
   credentialUrl: URL
 ) {
+  // The Git process may have exited during a slow sign-in, and nothing would
+  // forget its entry then.
+  if (!isValidTrampolineToken(trampolineToken)) {
+    return
+  }
   const origins = accountCredentialOrigins.get(trampolineToken)
   if (origins) {
     origins.add(credentialUrl.origin)

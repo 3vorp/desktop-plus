@@ -114,6 +114,34 @@ describe('authenticated image filter', () => {
     })
   }
 
+  it('never resolves or attaches third-party account credentials', async () => {
+    const { ordered, request } = createWebRequest()
+    const resolver = mock.fn(async () => 'fresh-access-token')
+    installAuthenticatedImageFilter(
+      ordered,
+      resolver
+    )([
+      {
+        endpoint: 'https://git.example/api/v4',
+        token: 'gitlab-access-token',
+        apiType: 'gitlab',
+      },
+      {
+        endpoint: 'https://forge.example/api/v1',
+        token: 'forgejo-access-token',
+        apiType: 'forgejo',
+      },
+    ])
+    for (const url of [
+      'https://git.example/owner/repo/assets/user/image',
+      'https://forge.example/user-attachments/assets/image',
+    ]) {
+      const response = await request(url)
+      assert.deepStrictEqual(response.requestHeaders, { Accept: 'image/png' })
+    }
+    assert.strictEqual(resolver.mock.callCount(), 0)
+  })
+
   it('does not resolve credentials when signed out', async () => {
     const { ordered, request } = createWebRequest()
     const resolver = mock.fn(async () => 'fresh-access-token')

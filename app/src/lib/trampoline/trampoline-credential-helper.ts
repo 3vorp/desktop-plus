@@ -19,6 +19,7 @@ import { useExternalCredentialHelper } from './use-external-credential-helper'
 import {
   findGenericTrampolineAccount,
   findGitHubTrampolineAccount,
+  isAccountForRemote,
 } from './find-account'
 import { IGitAccount } from '../../models/git-account'
 import {
@@ -35,6 +36,7 @@ import {
   rememberAccountCredential,
 } from './third-party-git-auth'
 import { AccountRequiresSignInError } from '../credential-sessions'
+import { Account } from '../../models/account'
 
 type Credential = Map<string, string>
 type Store = AccountsStore
@@ -54,14 +56,30 @@ const error = (msg: string, e: any) => log.error(`credential-helper: ${msg}`, e)
 const credWithAccount = (c: Credential, a: IGitAccount | undefined) =>
   a && new Map(c).set('username', a.login).set('password', a.token)
 
+/**
+ * @param signedIn An account the user just signed in to in order to answer
+ *                 this request, used instead of looking one up.
+ */
 async function getGitHubCredential(
   cred: Credential,
   store: AccountsStore,
-  token: string
+  token: string,
+  signedIn?: Account
 ) {
   const endpoint = `${getCredentialUrl(cred)}`
-  const login = await getLogin(cred, token)
-  const account = await findGitHubTrampolineAccount(store, endpoint, login)
+  // The sign-in dialog lets the user change the host, and this account's
+  // token must never be sent to another one.
+  if (signedIn !== undefined && !isAccountForRemote(signedIn, endpoint)) {
+    info(`signed in to a different host than ${endpoint}`)
+    return undefined
+  }
+  const account =
+    signedIn ??
+    (await findGitHubTrampolineAccount(
+      store,
+      endpoint,
+      await getLogin(cred, token)
+    ))
   if (account) {
     info(`found GitHub credential for ${endpoint} in store`)
     try {
@@ -150,7 +168,8 @@ async function getCredential(cred: Credential, store: Store, token: string) {
       setHasRejectedCredentialsForEndpoint(token, endpoint)
     }
 
-    return credWithAccount(cred, account)
+    // Lease and convert the new account's token like any other account's.
+    return account && getGitHubCredential(cred, store, token, account)
   }
 
   // GitHub.com/GHE creds are only stored internally

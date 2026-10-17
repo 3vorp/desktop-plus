@@ -17,6 +17,10 @@ const memoizedGetGenericPassword = memoizeOne(
     getGenericPassword(endpoint, login)
 )
 
+/** Whether the account signs in to the host of the remote url. */
+export const isAccountForRemote = (account: Account, remoteUrl: string) =>
+  new URL(getHTMLURL(account.endpoint)).origin === new URL(remoteUrl).origin
+
 export async function findGitHubTrampolineAccount(
   accountsStore: AccountsStore,
   remoteUrl: string,
