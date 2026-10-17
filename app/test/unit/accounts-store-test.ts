@@ -8,6 +8,8 @@ import {
   resetEndpointApiTypeRegistryForTesting,
 } from '../../src/lib/endpoint-api-type-registry'
 import { GitLabCloudAPIEndpoint } from '../../src/lib/api'
+import { TokenRefreshEvent } from '../../src/lib/credential-sessions'
+import { OAuthRefreshRejectedError } from '../../src/lib/oauth-token'
 
 describe('AccountsStore', () => {
   let accountsStore: AccountsStore
@@ -41,6 +43,85 @@ describe('AccountsStore', () => {
       const users = await accountsStore.getAll()
       assert.equal(users[0].login, newAccountLogin)
     })
+  })
+
+  it('publishes credential-free renewal events and supports unsubscribing', async t => {
+    const account = new Account(
+      'octocat',
+      'https://api.github.com',
+      'dotcom',
+      'old-access',
+      [],
+      '',
+      1,
+      'Octocat'
+    )
+    const store = new AccountsStore(
+      new InMemoryStore(),
+      new AsyncInMemoryStore(),
+      async () => ({
+        accessToken: 'new-access',
+        refreshToken: 'new-refresh',
+        expiresAt: Date.now() + 8 * 60 * 60_000,
+      })
+    )
+    await store.addAccount(account, {
+      accessToken: account.token,
+      refreshToken: 'old-refresh',
+      expiresAt: 0,
+    })
+    const events: TokenRefreshEvent[] = []
+    const subscription = store.onTokenRefreshEvent(event => events.push(event))
+    t.after(() => subscription.dispose())
+    await store.getAccountWithFreshToken(account)
+    assert.deepEqual(events, ['attempt', 'success'])
+    subscription.dispose()
+    await store.addAccount(account, {
+      accessToken: account.token,
+      refreshToken: 'another-refresh',
+      expiresAt: 0,
+    })
+    await store.getAccountWithFreshToken(account)
+    assert.deepEqual(events, ['attempt', 'success'])
+  })
+
+  it('counts actual renewal sign-outs even if deleting secure storage fails', async t => {
+    const secure = new AsyncInMemoryStore()
+    const store = new AccountsStore(new InMemoryStore(), secure, async () => {
+      throw new OAuthRefreshRejectedError()
+    })
+    const account = new Account(
+      'octocat',
+      'https://api.github.com',
+      'dotcom',
+      'old-access',
+      [],
+      '',
+      1,
+      'Octocat'
+    )
+    await store.addAccount(account, {
+      accessToken: account.token,
+      refreshToken: 'old-refresh',
+      expiresAt: 0,
+    })
+    const events: TokenRefreshEvent[] = []
+    const subscription = store.onTokenRefreshEvent(event => events.push(event))
+    t.after(() => subscription.dispose())
+    const deletion = t.mock.method(secure, 'deleteItem', async () => {
+      throw new Error('Secure deletion failed')
+    })
+    await assert.rejects(
+      store.getAccountWithFreshToken(account),
+      OAuthRefreshRejectedError
+    )
+    assert.equal(deletion.mock.callCount(), 1)
+    assert.deepEqual(await store.getAll(), [])
+    assert.deepEqual(events, [
+      'attempt',
+      'non-transient-failure',
+      'required-sign-in',
+    ])
   })
 
   it('edits expiry without publishing an account change or triggering renewal', async t => {

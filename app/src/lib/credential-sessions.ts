@@ -95,8 +95,20 @@ export interface IAccountTokenExpiration {
   readonly isOverridden: boolean
 }
 
+/** Credential-free lifecycle events for actual token refresh exchanges. */
+export type TokenRefreshEvent =
+  | 'attempt'
+  | 'success'
+  | 'transient-failure'
+  | 'non-transient-failure'
+  | 'abandoned'
+  | 'required-sign-in'
+
 /** Account-list changes that credential sessions ask their owner to perform. */
 export interface ICredentialSessionsDelegate {
+  /** A renewal lifecycle event; excludes expiry-override testing. */
+  readonly onTokenRefreshEvent?: (event: TokenRefreshEvent) => void
+
   /**
    * Sign the account out because its credential can no longer be used.
    *
@@ -901,6 +913,22 @@ export class CredentialSessions {
     if (refreshToken === undefined) {
       throw new Error('Cannot renew a credential without a refresh token.')
     }
+    const reportEvents = session.expirationOverride === undefined
+    const notifyRefreshEvent = (event: TokenRefreshEvent) => {
+      if (reportEvents) {
+        this.delegate.onTokenRefreshEvent?.(event)
+      }
+    }
+    const requireSignInAfterRefreshFailure = async () => {
+      const wasRetired = session.retired
+      const signOut = this.requireSignIn(session)
+      // The delegate retires the session synchronously, before deleting storage.
+      if (!wasRetired && session.retired) {
+        notifyRefreshEvent('required-sign-in')
+      }
+      await signOut
+    }
+    notifyRefreshEvent('attempt')
     let renewed: IOAuthToken
     try {
       renewed = await this.renewToken(
@@ -921,8 +949,10 @@ export class CredentialSessions {
           if (concurrent !== null && concurrent !== 'missing') {
             return concurrent.accessToken
           }
-          await this.requireSignIn(session)
+          notifyRefreshEvent('non-transient-failure')
+          await requireSignInAfterRefreshFailure()
         } else {
+          notifyRefreshEvent('transient-failure')
           log.warn(
             'OAuth renewal failed; retaining credentials for a later retry.'
           )
@@ -930,11 +960,14 @@ export class CredentialSessions {
             'Unable to renew your session. Check your connection and try again shortly.'
           )
         }
+      } else {
+        notifyRefreshEvent('abandoned')
       }
       throw e
     }
 
     if (session.retired) {
+      notifyRefreshEvent('abandoned')
       void this.revokeUnusedToken(account.withToken(renewed.accessToken))
       throw new AccountRequiresSignInError()
     }
@@ -951,7 +984,9 @@ export class CredentialSessions {
       })
     } catch {
       if (!session.retired) {
-        await this.requireSignIn(session)
+        await requireSignInAfterRefreshFailure()
+      } else {
+        notifyRefreshEvent('abandoned')
       }
       void this.revokeUnusedToken(account.withToken(renewed.accessToken))
       throw new Error(
@@ -959,6 +994,7 @@ export class CredentialSessions {
       )
     }
     if (session.retired) {
+      notifyRefreshEvent('abandoned')
       void this.revokeUnusedToken(account.withToken(renewed.accessToken))
       throw new AccountRequiresSignInError()
     }
@@ -973,6 +1009,7 @@ export class CredentialSessions {
       renewed.accessToken,
       account.login
     )
+    notifyRefreshEvent('success')
     log.info('OAuth credentials renewed and saved.')
     return renewed.accessToken
   }
