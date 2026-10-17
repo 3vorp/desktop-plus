@@ -55,14 +55,54 @@ async function setup(
   return { store, renewals: () => renewals }
 }
 
-function getCredential(store: AccountsStore, trampolineToken = 'test') {
+const other = new Account(
+  'hubot',
+  account.endpoint,
+  'dotcom',
+  'other-access',
+  '',
+  0,
+  [],
+  '',
+  2,
+  'Hubot'
+)
+
+/** Sign in `account` with an expiring credential and `other` on the same host. */
+async function setupLogins(
+  otherCredential: IOAuthToken = { accessToken: other.token }
+) {
+  const store = new AccountsStore(
+    new InMemoryStore(),
+    new AsyncInMemoryStore(),
+    async (_endpoint, refreshToken) =>
+      refreshToken === 'old-refresh'
+        ? renewed()
+        : { ...renewed(), accessToken: 'other-new-access' }
+  )
+  await store.addAccount(account, {
+    accessToken: account.token,
+    refreshToken: 'old-refresh',
+    expiresAt: Date.now(),
+  })
+  await store.addAccount(other, otherCredential)
+  return store
+}
+
+function getCredential(
+  store: AccountsStore,
+  trampolineToken = 'test',
+  username?: string
+) {
   const handler = createCredentialHelperTrampolineHandler(store)
   return handler({
     identifier: TrampolineCommandIdentifier.CredentialHelper,
     trampolineToken,
     parameters: ['get'],
     environmentVariables: new Map(),
-    stdin: 'protocol=https\nhost=github.com\n\n',
+    stdin: `protocol=https\nhost=github.com\n${
+      username === undefined ? '' : `username=${username}\n`
+    }\n`,
   })
 }
 
@@ -143,6 +183,23 @@ describe('Refreshing Git credentials', () => {
     assert.equal(prompt.mock.calls[0].arguments[0], 'https://github.com/')
     assert.ok(
       getHasRejectedCredentialsForEndpoint(token, 'https://github.com/')
+    )
+  })
+  it('gives each login on the host its own credentials', async () => {
+    const store = await setupLogins()
+    const result = await getCredential(store, 'test', other.login)
+    assert.ok(result)
+    const credential = parseCredential(result)
+    assert.equal(credential.get('username'), other.login)
+    assert.equal(credential.get('password'), other.token)
+
+    const ownResult = await getCredential(store, 'test', account.login)
+    assert.ok(ownResult)
+    assert.equal(parseCredential(ownResult).get('username'), account.login)
+    assert.equal(parseCredential(ownResult).get('password'), 'new-access')
+    assert.equal(
+      (await store.getAccountWithFreshToken(other)).token,
+      other.token
     )
   })
 })
@@ -446,5 +503,40 @@ describe('Refreshing Copilot session credentials', () => {
       async () => provider({ host: 'github.com', reason: 'initial' }),
       /sign in again/
     )
+  })
+
+  it('binds each login on the host to its own Copilot session', async () => {
+    const store = await setupLogins({
+      accessToken: other.token,
+      refreshToken: 'other-refresh',
+      expiresAt: Date.now() + 2 * 60 * 60 * 1000,
+    })
+    const accountProvider = createCopilotTokenProvider(store, account)
+    const otherProvider = createCopilotTokenProvider(store, other)
+    assert.ok(accountProvider && otherProvider)
+
+    const accountResult = await accountProvider({
+      host: 'github.com',
+      reason: 'initial',
+    })
+    const otherResult = await otherProvider({
+      host: 'github.com',
+      reason: 'initial',
+    })
+    assert.ok(accountResult.kind === 'token' && otherResult.kind === 'token')
+    assert.equal(accountResult.accessToken, 'new-access')
+    assert.equal(otherResult.accessToken, other.token)
+
+    await store.removeAccount(account)
+    await assert.rejects(
+      async () => accountProvider({ host: 'github.com', reason: 'refresh' }),
+      /sign in again/
+    )
+    const afterSignOut = await otherProvider({
+      host: 'github.com',
+      reason: 'refresh',
+    })
+    assert.ok(afterSignOut.kind === 'token')
+    assert.equal(afterSignOut.accessToken, other.token)
   })
 })

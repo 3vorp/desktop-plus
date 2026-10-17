@@ -1053,7 +1053,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
       return
     }
 
-    const account = getAccountForEndpoint(this.accounts, endpoint, login)
+    // Never write the refreshed credential into another login's account.
+    const account = getAccountForEndpoint(this.accounts, endpoint, login, true)
     if (account === null) {
       return
     }

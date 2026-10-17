@@ -1,6 +1,11 @@
 import { IDataStore, ISecureStore } from './stores'
 import { getKeyForAccount } from '../auth'
-import { Account, AccountAPIType, isDotComAccount } from '../../models/account'
+import {
+  Account,
+  AccountAPIType,
+  isDotComAccount,
+  UnknownLogin,
+} from '../../models/account'
 import {
   fetchUser,
   EmailVisibility,
@@ -204,13 +209,23 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     })
   }
 
-  /** Resolve token snapshots held by long-lived clients without changing identity. */
+  /**
+   * Resolve token snapshots held by long-lived clients without changing identity.
+   *
+   * The login identifies which account an empty token belongs to when several
+   * accounts are signed in to the endpoint.
+   */
   public resolveToken = async (
     endpoint: string,
-    token: string
+    token: string,
+    login?: string | UnknownLogin
   ): Promise<string> => {
     await this.loadingPromise
-    return this.credentials.resolveToken(endpoint, token)
+    return this.credentials.resolveToken(
+      endpoint,
+      token,
+      typeof login === 'string' ? login : undefined
+    )
   }
 
   /** Get the current credential for an account before handing it to another consumer. */
@@ -300,10 +315,13 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     return retired
   }
 
-  private onTokenRenewed = (endpoint: string, accessToken: string) => {
+  private onTokenRenewed = (
+    endpoint: string,
+    accessToken: string,
+    login: string
+  ) => {
     this.accounts = this.accounts.map(a =>
-      // Other sign-ins on the endpoint don't own the renewed session.
-      a.endpoint === endpoint && this.credentials.isRefreshable(a)
+      a.endpoint === endpoint && a.login === login
         ? this.credentials.inheritSession(a, a.withToken(accessToken))
         : a
     )
@@ -399,13 +417,13 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
   }
 
   /**
-   * Replace the credential of an installed account, e.g. after a third-party
-   * provider refreshed its token.
+   * Replace the credential of an installed account with the same endpoint,
+   * login and id, e.g. after a third-party provider refreshed its token.
    */
   public async modifyAccount(newAccount: Account): Promise<Account | null> {
     await this.loadingPromise
     const current = this.accounts.find(
-      a => a.endpoint === newAccount.endpoint && a.id === newAccount.id
+      a => isSameSignIn(a, newAccount) && a.id === newAccount.id
     )
     if (current === undefined) {
       log.warn(
@@ -453,10 +471,22 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
    * credentials that rotated while the profile request was in flight.
    */
   private async tryUpdateAccount(account: Account): Promise<void> {
-    const currentToken = this.credentials.trackToken(account.endpoint)
+    const currentToken = this.credentials.trackToken(
+      account.endpoint,
+      account.login
+    )
     try {
       const fresh = await this.getAccountWithFreshToken(account)
       const updated = await updatedAccount(fresh)
+      // The login keys the account's session, secure-storage item and
+      // repository associations, so a renamed user keeps the previous login
+      // until they sign in again.
+      if (updated.login !== account.login) {
+        log.warn(
+          `Account '${account.login}' was renamed to '${updated.login}'. Sign in again to use the new login.`
+        )
+        return
+      }
       const token = currentToken()
       if (token !== null) {
         this.accounts = this.accounts.map(a =>

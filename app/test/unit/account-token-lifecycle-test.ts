@@ -13,7 +13,7 @@ import {
   serializeAccountCredential,
 } from '../../src/lib/account-credential'
 import { getKeyForAccount } from '../../src/lib/auth'
-import { API } from '../../src/lib/api'
+import { API, BitbucketCloudAPIEndpoint } from '../../src/lib/api'
 import { createMockAPIIdentity } from '../helpers/mock-api'
 import { InMemoryStore, AsyncInMemoryStore } from '../helpers/stores'
 import { AppStore } from '../../src/lib/stores/app-store'
@@ -1035,17 +1035,23 @@ describe('Coordinated account token renewal', () => {
       async () => true
     )
 
-    // Desktop Plus supports several accounts per endpoint, so both are listed.
-    // Credential sessions are still tracked per endpoint, so only the last
-    // loaded account's session is live here.
+    // Desktop Plus supports several accounts per endpoint, each with its own
+    // credential session.
     assert.deepEqual(await store.getAll(), [account, other])
     assert.equal(
       await store.resolveToken(other.endpoint, other.token),
       other.token
     )
     assert.equal(renewals, 0)
+    assert.equal(
+      await store.resolveToken(account.endpoint, account.token),
+      renewed.accessToken
+    )
+    assert.equal(renewals, 1)
     assert.deepEqual(await store.removeAccount(other), other)
-    assert.deepEqual(await store.getAll(), [account])
+    assert.deepEqual(await store.getAll(), [
+      account.withToken(renewed.accessToken),
+    ])
   })
 
   it('loading duplicate entries for the same login keeps the last one', async () => {
@@ -1080,7 +1086,7 @@ describe('Coordinated account token renewal', () => {
     )
   })
 
-  it('replacing an account never redirects stale clients to another identity', async () => {
+  it('adding another login never redirects stale clients to another identity', async () => {
     const { store } = setup()
     await store.addAccount(account, rotating)
     const other = new Account(
@@ -1096,9 +1102,10 @@ describe('Coordinated account token renewal', () => {
       'Other'
     )
     await store.addAccount(other)
-    await assert.rejects(
-      store.resolveToken(account.endpoint, account.token),
-      AccountRequiresSignInError
+    // Desktop Plus keeps both accounts signed in, each with its own token.
+    assert.equal(
+      await store.resolveToken(account.endpoint, account.token),
+      renewed.accessToken
     )
     assert.equal(
       await store.resolveToken(other.endpoint, other.token),
@@ -1149,5 +1156,407 @@ describe('Coordinated account token renewal', () => {
     gate.resolve(renewed)
     await Promise.all([pending, invalidation])
     assert.equal((await store.getAll())[0].token, renewed.accessToken)
+  })
+})
+
+describe('Several accounts on one endpoint', () => {
+  const other = new Account(
+    'hubot',
+    account.endpoint,
+    'dotcom',
+    'other-access',
+    '',
+    0,
+    [],
+    '',
+    2,
+    'Hubot'
+  )
+  const otherRotating: IOAuthToken = {
+    ...rotating,
+    accessToken: other.token,
+    refreshToken: 'other-refresh',
+  }
+  const otherRenewed: IOAuthToken = {
+    ...renewed,
+    accessToken: 'other-new-access',
+    refreshToken: 'other-new-refresh',
+  }
+  const longLived = (credential: IOAuthToken): IOAuthToken => ({
+    ...credential,
+    expiresAt: now + 60 * 60 * 1000,
+  })
+  const renewByRefreshToken = async (_endpoint: string, refreshToken: string) =>
+    refreshToken === rotating.refreshToken ? renewed : otherRenewed
+  const stored = async (secure: AsyncInMemoryStore, a: Account) =>
+    deserializeAccountCredential(
+      await secure.getItem(getKeyForAccount(a), a.login)
+    )
+  const logins = (accounts: ReadonlyArray<Account>) =>
+    accounts.map(a => `${a.login}:${a.token}`)
+
+  async function expectUsable(
+    store: AccountsStore,
+    snapshot: Account,
+    token: string
+  ) {
+    assert.equal(await store.resolveToken(snapshot.endpoint, token), token)
+    const fresh = await store.getAccountWithFreshToken(snapshot)
+    assert.equal(fresh.login, snapshot.login)
+    assert.equal(fresh.token, token)
+    const lease = await store.leaseAccountToken(snapshot, 'git')
+    assert.equal(lease.account.login, snapshot.login)
+    assert.equal(lease.account.token, token)
+    lease.release()
+    assert.equal((await store.createTokenGetter(snapshot)()).accessToken, token)
+    assert.equal(
+      (await store.createTokenGetter(fresh)()).accessToken,
+      token,
+      'derived snapshots keep their own session'
+    )
+  }
+
+  it('keeps every login usable after adding another and after restarting', async () => {
+    const { store, data, secure } = setup(renewByRefreshToken)
+    await store.addAccount(account, longLived(rotating))
+    await store.addAccount(other, longLived(otherRotating))
+
+    await expectUsable(store, account, account.token)
+    await expectUsable(store, other, other.token)
+
+    const restarted = new AccountsStore(
+      data,
+      secure,
+      renewByRefreshToken,
+      () => now
+    )
+    const [loadedAccount, loadedOther] = await restarted.getAll()
+    assert.deepEqual([loadedAccount, loadedOther], [account, other])
+    await expectUsable(restarted, loadedAccount, account.token)
+    await expectUsable(restarted, loadedOther, other.token)
+  })
+
+  it('renewing one login leaves the other untouched', async () => {
+    let calls = 0
+    const { store, secure } = setup(async (endpoint, refreshToken) => {
+      calls++
+      return renewByRefreshToken(endpoint, refreshToken)
+    })
+    await store.addAccount(account, rotating)
+    await store.addAccount(other, otherRotating)
+
+    assert.equal(
+      await store.resolveToken(account.endpoint, account.token),
+      renewed.accessToken
+    )
+    assert.equal(calls, 1)
+    assert.deepEqual(logins(await store.getAll()), [
+      `${account.login}:${renewed.accessToken}`,
+      `${other.login}:${other.token}`,
+    ])
+    assert.deepEqual(await stored(secure, account), renewed)
+    assert.deepEqual(await stored(secure, other), otherRotating)
+
+    assert.equal(
+      (await store.getAccountWithFreshToken(other)).token,
+      otherRenewed.accessToken
+    )
+    assert.equal(calls, 2)
+    assert.deepEqual(logins(await store.getAll()), [
+      `${account.login}:${renewed.accessToken}`,
+      `${other.login}:${otherRenewed.accessToken}`,
+    ])
+    assert.deepEqual(await stored(secure, other), otherRenewed)
+  })
+
+  it('a rejected renewal signs out only that login', async () => {
+    const { store, data, secure } = setup(async (endpoint, refreshToken) => {
+      if (refreshToken === rotating.refreshToken) {
+        throw new OAuthRefreshRejectedError()
+      }
+      return renewByRefreshToken(endpoint, refreshToken)
+    })
+    await store.addAccount(account, rotating)
+    await store.addAccount(other, otherRotating)
+    const invalidated: Account[] = []
+    store.onTokenInvalidated(a => invalidated.push(a))
+
+    await assert.rejects(
+      store.resolveToken(account.endpoint, account.token),
+      OAuthRefreshRejectedError
+    )
+
+    assert.deepEqual(
+      invalidated.map(a => [a.login, a.token]),
+      [[account.login, '']]
+    )
+    assert.deepEqual(logins(await store.getAll()), [
+      `${other.login}:${other.token}`,
+    ])
+    assert.equal(await stored(secure, account), null)
+    assert.deepEqual(await stored(secure, other), otherRotating)
+    assert.equal(
+      (await store.getAccountWithFreshToken(other)).token,
+      otherRenewed.accessToken
+    )
+    assert.deepEqual(logins(await new AccountsStore(data, secure).getAll()), [
+      `${other.login}:${otherRenewed.accessToken}`,
+    ])
+  })
+
+  it('a 401 for one login signs out only that login', async t => {
+    const { store, secure } = setup()
+    await store.addAccount(account)
+    await store.addAccount(other)
+    t.after(API.setTokenProvider(store.resolveToken))
+    t.after(API.onTokenInvalidated(store.handleTokenInvalidated))
+    const invalidated = new Promise<Account>(resolve =>
+      store.onTokenInvalidated(resolve)
+    )
+    t.mock.method(
+      globalThis,
+      'fetch',
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        assert.equal(
+          new Headers(init?.headers).get('Authorization'),
+          `Bearer ${other.token}`
+        )
+        return Response.json(
+          { message: 'Bad credentials' },
+          { status: 401, headers: { 'X-GitHub-Request-Id': 'test-request' } }
+        )
+      }
+    )
+
+    await assert.rejects(
+      API.fromAccount(other).fetchAccount(),
+      /Bad credentials/
+    )
+    const signedOut = await invalidated
+    assert.equal(signedOut.login, other.login)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.deepEqual(logins(await store.getAll()), [
+      `${account.login}:${account.token}`,
+    ])
+    assert.equal(await stored(secure, other), null)
+    await expectUsable(store, account, account.token)
+  })
+
+  it('signing out one login keeps the other fully working', async () => {
+    const { store, data, secure } = setup(renewByRefreshToken)
+    await store.addAccount(account, longLived(rotating))
+    await store.addAccount(other, longLived(otherRotating))
+    const accountGetter = store.createTokenGetter(account)
+    const otherGetter = store.createTokenGetter(other)
+
+    assert.deepEqual(await store.removeAccount(account), account)
+
+    await assert.rejects(accountGetter(), AccountRequiresSignInError)
+    assert.throws(
+      () => store.createTokenGetter(account),
+      AccountRequiresSignInError
+    )
+    await assert.rejects(
+      store.getAccountWithFreshToken(account),
+      AccountRequiresSignInError
+    )
+    assert.equal((await otherGetter()).accessToken, other.token)
+    await expectUsable(store, other, other.token)
+    assert.equal(await stored(secure, account), null)
+    assert.deepEqual(await stored(secure, other), longLived(otherRotating))
+    assert.deepEqual(await new AccountsStore(data, secure).getAll(), [other])
+  })
+
+  it('saving one login neither waits for nor overwrites another', async t => {
+    const { store, secure } = setup()
+    const setItem = secure.setItem.bind(secure)
+    const gate = deferred<void>()
+    t.mock.method(
+      secure,
+      'setItem',
+      async (key: string, login: string, value: string) => {
+        if (login === account.login) {
+          await gate.promise
+        }
+        return setItem(key, login, value)
+      }
+    )
+
+    const addingAccount = store.addAccount(account, rotating)
+    assert.deepEqual(await store.addAccount(other, otherRotating), other)
+    assert.deepEqual(await store.getAll(), [other])
+
+    gate.resolve()
+    assert.deepEqual(await addingAccount, account)
+    assert.deepEqual(await store.getAll(), [other, account])
+    assert.deepEqual(await stored(secure, account), rotating)
+    assert.deepEqual(await stored(secure, other), otherRotating)
+  })
+
+  it('signing in again replaces only the session of that login', async () => {
+    const { store } = setup(renewByRefreshToken)
+    await store.addAccount(account, longLived(rotating))
+    await store.addAccount(other, longLived(otherRotating))
+    const otherGetter = store.createTokenGetter(other)
+
+    const again = await store.addAccount(account.withToken('again'), {
+      accessToken: 'again',
+    })
+    assert.ok(again)
+
+    assert.throws(
+      () => store.createTokenGetter(account),
+      AccountRequiresSignInError
+    )
+    await assert.rejects(
+      store.resolveToken(account.endpoint, account.token),
+      AccountRequiresSignInError
+    )
+    assert.equal((await store.createTokenGetter(again)()).accessToken, 'again')
+    assert.equal((await otherGetter()).accessToken, other.token)
+    assert.deepEqual(logins(await store.getAll()), [
+      `${account.login}:again`,
+      `${other.login}:${other.token}`,
+    ])
+  })
+
+  it('resolves an account loaded without a credential by its login', async () => {
+    const { data, secure } = setup()
+    data.setItem(
+      'users',
+      JSON.stringify([account.withToken(''), other.withToken('')])
+    )
+    await secure.setItem(getKeyForAccount(other), other.login, other.token)
+    const store = new AccountsStore(data, secure)
+    const invalidated: string[] = []
+    store.onTokenInvalidated(a => invalidated.push(a.login))
+    assert.deepEqual(logins(await store.getAll()), [
+      `${account.login}:`,
+      `${other.login}:${other.token}`,
+    ])
+
+    assert.equal(await store.resolveToken(account.endpoint, ''), '')
+    assert.equal(
+      await store.resolveToken(account.endpoint, '', other.login),
+      ''
+    )
+    assert.deepEqual(invalidated, [])
+
+    await assert.rejects(
+      store.resolveToken(account.endpoint, '', account.login),
+      AccountRequiresSignInError
+    )
+    assert.deepEqual(invalidated, [account.login])
+    const [loadedOther] = await store.getAll()
+    assert.deepEqual([loadedOther], [other])
+    await expectUsable(store, loadedOther, other.token)
+  })
+
+  it('refreshes the profile of each login with its own session', async t => {
+    const { store } = setup(renewByRefreshToken)
+    await store.addAccount(account, longLived(rotating))
+    await store.addAccount(other, longLived(otherRotating))
+    t.mock.method(API.prototype, 'fetchAccount', async function (this: API) {
+      return this.getToken() === account.token
+        ? { ...createMockAPIIdentity(), name: 'Updated Octocat' }
+        : {
+            ...createMockAPIIdentity({ id: 2, login: other.login }),
+            name: 'Updated Hubot',
+          }
+    })
+    t.mock.method(API.prototype, 'fetchEmails', async () => [])
+    t.mock.method(API.prototype, 'fetchUserCopilotInfo', async () => null)
+    t.mock.method(API.prototype, 'fetchFeatureFlags', async () => [])
+
+    await store.refresh()
+
+    const [refreshedAccount, refreshedOther] = await store.getAll()
+    assert.equal(refreshedAccount.name, 'Updated Octocat')
+    assert.equal(refreshedOther.name, 'Updated Hubot')
+    await expectUsable(store, refreshedAccount, account.token)
+    await expectUsable(store, refreshedOther, other.token)
+  })
+
+  it('keeps the stored login when the API reports that the user was renamed', async t => {
+    const { store, secure } = setup()
+    await store.addAccount(account)
+    t.mock.method(API.prototype, 'fetchAccount', async () => ({
+      ...createMockAPIIdentity({ login: 'renamed' }),
+      name: 'Renamed',
+    }))
+    t.mock.method(API.prototype, 'fetchEmails', async () => [])
+    t.mock.method(API.prototype, 'fetchUserCopilotInfo', async () => null)
+    t.mock.method(API.prototype, 'fetchFeatureFlags', async () => [])
+    t.mock.method(log, 'warn')
+
+    await store.refresh()
+
+    assert.deepEqual(await store.getAll(), [account])
+    assert.deepEqual(await stored(secure, account), {
+      accessToken: account.token,
+    })
+    await expectUsable(store, account, account.token)
+  })
+
+  it('modifying a third-party account only updates the account with that login', async () => {
+    // Bitbucket identities always have id 0.
+    const bitbucket = (login: string, token: string) =>
+      new Account(
+        login,
+        BitbucketCloudAPIEndpoint,
+        'bitbucket',
+        token,
+        `${login}-refresh`,
+        now + 60 * 60 * 1000,
+        [],
+        '',
+        0,
+        login
+      )
+    const { store, secure } = setup()
+    const first = bitbucket('first', 'first-token')
+    const second = bitbucket('second', 'second-token')
+    assert.ok(await store.addAccount(first))
+    assert.ok(await store.addAccount(second))
+    const firstGetter = store.createTokenGetter(first)
+    const secondGetter = store.createTokenGetter(second)
+
+    const modified = await store.modifyAccount(
+      first.withRefreshToken('first-new', 'first-new-refresh', now)
+    )
+
+    assert.equal(modified?.login, first.login)
+    assert.equal(modified?.token, 'first-new')
+    assert.deepEqual(logins(await store.getAll()), [
+      `${first.login}:first-new`,
+      `${second.login}:${second.token}`,
+    ])
+    assert.deepEqual(await stored(secure, first), { accessToken: 'first-new' })
+    assert.deepEqual(await stored(secure, second), {
+      accessToken: second.token,
+    })
+    await assert.rejects(firstGetter(), AccountRequiresSignInError)
+    assert.equal((await secondGetter()).accessToken, second.token)
+    assert.equal(
+      (await store.getAccountWithFreshToken(second)).token,
+      second.token
+    )
+
+    // A late refresh for a signed-out login must not land on another account.
+    await store.removeAccount(first)
+    assert.equal(
+      await store.modifyAccount(
+        first.withRefreshToken('late-token', 'late-refresh', now)
+      ),
+      null
+    )
+    assert.deepEqual(logins(await store.getAll()), [
+      `${second.login}:${second.token}`,
+    ])
+    assert.equal(await stored(secure, first), null)
+    assert.deepEqual(await stored(secure, second), {
+      accessToken: second.token,
+    })
+    assert.equal((await secondGetter()).accessToken, second.token)
   })
 })

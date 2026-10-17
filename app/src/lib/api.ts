@@ -1672,7 +1672,11 @@ interface IBitbucketAPIWorkspace {
  */
 export class API {
   private static tokenProvider:
-    | ((endpoint: string, token: string) => Promise<string>)
+    | ((
+        endpoint: string,
+        token: string,
+        login: string | UnknownLogin
+      ) => Promise<string>)
     | undefined
   private static readonly tokenInvalidatedListeners =
     new Set<TokenInvalidatedCallback>()
@@ -1681,7 +1685,11 @@ export class API {
 
   /** Install the renderer's shared credential authority. Returns a cleanup function. */
   public static setTokenProvider(
-    provider: (endpoint: string, token: string) => Promise<string>
+    provider: (
+      endpoint: string,
+      token: string,
+      login: string | UnknownLogin
+    ) => Promise<string>
   ) {
     const previous = this.tokenProvider
     this.tokenProvider = provider
@@ -2836,7 +2844,7 @@ export class API {
     const token =
       resolvedToken ??
       (API.tokenProvider && this.manageAccountToken
-        ? await API.tokenProvider(this.endpoint, this.token)
+        ? await API.tokenProvider(this.endpoint, this.token, this.login)
         : this.token)
     return await request(
       endpoint,
@@ -2864,7 +2872,7 @@ export class API {
   ): Promise<Response> {
     const token =
       API.tokenProvider && this.manageAccountToken
-        ? await API.tokenProvider(this.endpoint, this.token)
+        ? await API.tokenProvider(this.endpoint, this.token, this.login)
         : this.token
     const response = await this.request(
       this.endpoint,

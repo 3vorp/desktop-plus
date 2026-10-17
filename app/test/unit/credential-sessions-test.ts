@@ -52,7 +52,7 @@ function setup(
     secure,
     {
       requireSignIn: async a => {
-        sessions.retire(a.endpoint)
+        sessions.retire(a.endpoint, a.login)
         signedOut.push(a)
         return a
       },
@@ -146,10 +146,10 @@ describe('CredentialSessions', () => {
   it('stops tracking a session once it is retired', () => {
     const { sessions } = setup()
     sessions.restore(account, expiring)
-    const token = sessions.trackToken(account.endpoint)
+    const token = sessions.trackToken(account.endpoint, account.login)
 
     assert.equal(token(), account.token)
-    sessions.retire(account.endpoint)
+    sessions.retire(account.endpoint, account.login)
     sessions.restore(account.withToken('other'), { accessToken: 'other' })
     assert.equal(token(), null)
   })
@@ -213,7 +213,7 @@ describe('CredentialSessions', () => {
     const getToken = sessions.createTokenGetter(account, 0)
 
     const getting = getToken()
-    sessions.retire(account.endpoint)
+    sessions.retire(account.endpoint, account.login)
     const replacement = sessions.restore(account, {
       ...renewed,
       accessToken: account.token,
@@ -240,7 +240,7 @@ describe('CredentialSessions', () => {
       expiresAt: renewed.expiresAt,
     })
     assert.equal(sessions.isRefreshable(copied), true)
-    sessions.retire(account.endpoint)
+    sessions.retire(account.endpoint, account.login)
     assert.equal(sessions.isRefreshable(copied), false)
     assert.throws(
       () => sessions.createTokenGetter(copied),
@@ -348,7 +348,7 @@ describe('CredentialSessions', () => {
       await sessions.leaseToken(account, 'git', 0)
 
       const waiting = sessions.getFreshToken(account)
-      sessions.retire(account.endpoint)
+      sessions.retire(account.endpoint, account.login)
       await assert.rejects(waiting, AccountRequiresSignInError)
     })
 
@@ -398,6 +398,291 @@ describe('CredentialSessions', () => {
         AccountRequiresSignInError
       )
       assert.deepEqual(signedOut, [account])
+    })
+  })
+
+  describe('Several logins on one endpoint', () => {
+    const other = new Account(
+      'hubot',
+      account.endpoint,
+      'dotcom',
+      'other-access',
+      '',
+      0,
+      [],
+      '',
+      2,
+      'Hubot'
+    )
+    const otherExpiring: IOAuthToken = {
+      ...expiring,
+      accessToken: other.token,
+      refreshToken: 'other-refresh',
+    }
+    const otherRenewed: IOAuthToken = {
+      ...renewed,
+      accessToken: 'other-new-access',
+      refreshToken: 'other-new-refresh',
+    }
+
+    function setupLogins(
+      renew = async (_endpoint: string, refreshToken: string) =>
+        refreshToken === expiring.refreshToken ? renewed : otherRenewed
+    ) {
+      const secure = new AsyncInMemoryStore()
+      const signedOut: Account[] = []
+      const renewals: Array<[string, string, string]> = []
+      const sessions: CredentialSessions = new CredentialSessions(
+        secure,
+        {
+          requireSignIn: async a => {
+            sessions.retire(a.endpoint, a.login)
+            signedOut.push(a)
+            return a
+          },
+          onTokenRenewed: (endpoint, token, login) =>
+            renewals.push([endpoint, token, login]),
+          onSignedIn: () => {},
+        },
+        renew,
+        () => now,
+        async () => true
+      )
+      return { sessions, secure, signedOut, renewals }
+    }
+
+    const storedCredential = async (secure: AsyncInMemoryStore, a: Account) =>
+      deserializeAccountCredential(
+        await secure.getItem(getKeyForAccount(a), a.login)
+      )
+
+    it('keeps every restored login usable', async () => {
+      const { sessions, renewals } = setupLogins()
+      sessions.restore(account, expiring)
+      sessions.restore(other, { accessToken: other.token })
+
+      assert.equal(
+        await sessions.resolveToken(account.endpoint, account.token),
+        renewed.accessToken
+      )
+      assert.equal(
+        await sessions.resolveToken(other.endpoint, other.token),
+        other.token
+      )
+      assert.equal(await sessions.getFreshToken(other), other.token)
+      const lease = await sessions.leaseToken(other, 'git')
+      assert.equal(lease.token, other.token)
+      lease.release()
+      assert.deepEqual(await sessions.createTokenGetter(other)(), {
+        accessToken: other.token,
+        expiresAt: undefined,
+      })
+      assert.equal(sessions.isRefreshable(account), true)
+      assert.equal(sessions.isRefreshable(other), false)
+      assert.deepEqual(renewals, [
+        [account.endpoint, renewed.accessToken, account.login],
+      ])
+    })
+
+    it('renews each login without touching the other', async () => {
+      const { sessions, secure, renewals } = setupLogins()
+      sessions.restore(account, expiring)
+      sessions.restore(other, otherExpiring)
+      const otherToken = sessions.trackToken(other.endpoint, other.login)
+
+      assert.equal(await sessions.getFreshToken(account), renewed.accessToken)
+      assert.equal(otherToken(), other.token)
+      assert.deepEqual(await storedCredential(secure, account), renewed)
+      assert.equal(await storedCredential(secure, other), null)
+
+      assert.equal(
+        await sessions.resolveToken(other.endpoint, other.token),
+        otherRenewed.accessToken
+      )
+      assert.equal(otherToken(), otherRenewed.accessToken)
+      assert.deepEqual(await storedCredential(secure, other), otherRenewed)
+      assert.equal(
+        await sessions.resolveToken(account.endpoint, account.token),
+        renewed.accessToken
+      )
+      assert.deepEqual(renewals, [
+        [account.endpoint, renewed.accessToken, account.login],
+        [other.endpoint, otherRenewed.accessToken, other.login],
+      ])
+    })
+
+    it('signs out only the login whose renewal is rejected', async () => {
+      const { sessions, signedOut } = setupLogins(async (_, refreshToken) => {
+        if (refreshToken === expiring.refreshToken) {
+          throw new OAuthRefreshRejectedError()
+        }
+        return otherRenewed
+      })
+      sessions.restore(account, expiring)
+      sessions.restore(other, otherExpiring)
+
+      await assert.rejects(
+        sessions.getFreshToken(account),
+        OAuthRefreshRejectedError
+      )
+      assert.deepEqual(signedOut, [account])
+      assert.equal(
+        await sessions.getFreshToken(other),
+        otherRenewed.accessToken
+      )
+      await assert.rejects(
+        sessions.resolveToken(account.endpoint, account.token),
+        AccountRequiresSignInError
+      )
+    })
+
+    it('signs out only the login whose token is rejected', async () => {
+      const { sessions, signedOut } = setupLogins()
+      sessions.restore(account, { accessToken: account.token })
+      sessions.restore(other, { accessToken: other.token })
+
+      await sessions.invalidateToken(other.endpoint, 'obsolete')
+      assert.deepEqual(signedOut, [])
+      await sessions.invalidateToken(other.endpoint, other.token)
+      assert.deepEqual(signedOut, [other])
+      assert.equal(await sessions.getFreshToken(account), account.token)
+      await sessions.invalidateToken(other.endpoint, other.token)
+      assert.deepEqual(signedOut, [other])
+    })
+
+    it('retires one login without affecting the other', async () => {
+      const { sessions } = setupLogins()
+      sessions.restore(account, { accessToken: account.token })
+      sessions.restore(other, otherExpiring)
+      const accountToken = sessions.trackToken(account.endpoint, account.login)
+      const otherToken = sessions.trackToken(other.endpoint, other.login)
+      const otherLease = await sessions.leaseToken(other, 'git', 0)
+
+      sessions.retire(account.endpoint, account.login)
+
+      assert.equal(accountToken(), null)
+      assert.equal(otherToken(), other.token)
+      await assert.rejects(
+        sessions.getFreshToken(account),
+        AccountRequiresSignInError
+      )
+      assert.throws(
+        () => sessions.createTokenGetter(account),
+        AccountRequiresSignInError
+      )
+      otherLease.release()
+      assert.deepEqual(await sessions.createTokenGetter(other)(), {
+        accessToken: otherRenewed.accessToken,
+        expiresAt: otherRenewed.expiresAt,
+      })
+    })
+
+    it('replaces only the session of a login that signs in again', async () => {
+      const { sessions, secure } = setupLogins()
+      const original = await sessions.add(account, expiring)
+      const second = await sessions.add(other, { accessToken: other.token })
+      const again = await sessions.add(account.withToken('again'), {
+        accessToken: 'again',
+      })
+
+      assert.throws(
+        () => sessions.createTokenGetter(original),
+        AccountRequiresSignInError
+      )
+      await assert.rejects(
+        sessions.resolveToken(account.endpoint, account.token),
+        AccountRequiresSignInError
+      )
+      assert.equal(
+        (await sessions.createTokenGetter(again)()).accessToken,
+        'again'
+      )
+      assert.equal(
+        (await sessions.createTokenGetter(second)()).accessToken,
+        other.token
+      )
+      assert.deepEqual(await storedCredential(secure, account), {
+        accessToken: 'again',
+      })
+      assert.deepEqual(await storedCredential(secure, other), {
+        accessToken: other.token,
+      })
+    })
+
+    it('saves different logins without waiting for each other', async t => {
+      const { sessions, secure } = setupLogins()
+      let release!: () => void
+      const gate = new Promise<void>(resolve => (release = resolve))
+      const setItem = secure.setItem.bind(secure)
+      t.mock.method(
+        secure,
+        'setItem',
+        async (key: string, login: string, value: string) => {
+          if (login === account.login) {
+            await gate
+          }
+          return setItem(key, login, value)
+        }
+      )
+
+      let addedAccount = false
+      const addingAccount = sessions
+        .add(account, expiring)
+        .then(() => (addedAccount = true))
+      const addedOther = await sessions.add(other, otherExpiring)
+      assert.equal(addedOther.token, other.token)
+      assert.equal(addedAccount, false)
+
+      release()
+      await addingAccount
+      assert.deepEqual(await storedCredential(secure, account), expiring)
+      assert.deepEqual(await storedCredential(secure, other), otherExpiring)
+      assert.equal(await sessions.getFreshToken(other, 0), other.token)
+      assert.equal(await sessions.getFreshToken(account, 0), account.token)
+    })
+
+    it("never resolves a token to another login's current token", async () => {
+      const { sessions, renewals } = setupLogins()
+      sessions.restore(account, expiring)
+      sessions.restore(other, otherExpiring)
+
+      assert.equal(
+        await sessions.resolveToken(
+          account.endpoint,
+          account.token,
+          other.login
+        ),
+        account.token
+      )
+      assert.deepEqual(renewals, [])
+      assert.equal(
+        await sessions.resolveToken(
+          account.endpoint,
+          account.token,
+          account.login
+        ),
+        renewed.accessToken
+      )
+    })
+
+    it('resolves an empty token only for the login that names it', async () => {
+      const { sessions, signedOut } = setupLogins()
+      const missing = sessions.restore(account.withToken(''), null)
+      sessions.restore(other, { accessToken: other.token })
+
+      assert.equal(await sessions.resolveToken(account.endpoint, ''), '')
+      assert.equal(
+        await sessions.resolveToken(account.endpoint, '', other.login),
+        ''
+      )
+      assert.deepEqual(signedOut, [])
+
+      await assert.rejects(
+        sessions.resolveToken(account.endpoint, '', account.login),
+        AccountRequiresSignInError
+      )
+      assert.deepEqual(signedOut, [missing])
+      assert.equal(await sessions.getFreshToken(other), other.token)
     })
   })
 })
