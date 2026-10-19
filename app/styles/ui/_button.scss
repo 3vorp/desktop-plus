@@ -184,5 +184,11 @@
       background-color: var(--box-selected-active-background-color);
       border-color: var(--box-selected-active-background-color);
     }
+
+    + .button-group-item:not([aria-disabled='true']):hover {
+      margin-left: -1px;
+      border-left-width: 1px;
+      z-index: 2;
+    }
   }
 }
