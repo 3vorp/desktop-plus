@@ -1001,6 +1001,19 @@ export class Dispatcher {
     return this.appStore._changeRepositoryAlias(repository, newAlias)
   }
 
+  /** Hides the repository from the repository list until the given time. */
+  public snoozeRepository(
+    repository: Repository,
+    until: number
+  ): Promise<void> {
+    return this.appStore._snoozeRepository(repository, until)
+  }
+
+  /** Shows a snoozed repository in the repository list again. */
+  public unsnoozeRepository(repository: Repository): Promise<void> {
+    return this.appStore._unsnoozeRepository(repository)
+  }
+
   /** Changes the repository group name to a new name. */
   public changeRepositoryGroupName(
     repository: Repository,

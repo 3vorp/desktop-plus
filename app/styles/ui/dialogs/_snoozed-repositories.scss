@@ -1,0 +1,84 @@
+#snooze-repository {
+  width: 450px;
+
+  .snooze-repository-presets {
+    flex-wrap: wrap;
+    gap: var(--spacing-half);
+
+    .button-component {
+      margin-right: 0;
+    }
+  }
+}
+
+body.theme-dark #snooze-repository input {
+  color-scheme: dark;
+}
+
+#snoozed-repositories {
+  width: 500px;
+
+  .dialog-content {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    max-height: calc(100vh - 150px);
+  }
+
+  .no-snoozed-repositories {
+    padding: var(--spacing);
+    text-align: center;
+    color: var(--text-secondary-color);
+  }
+
+  .snoozed-repository-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    border: var(--base-border);
+    border-radius: var(--border-radius);
+
+    .snoozed-repository-list-item {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      min-width: 0;
+      margin: 0;
+      padding: var(--spacing-half) var(--spacing);
+
+      &:not(:last-child) {
+        border-bottom: var(--base-border);
+      }
+
+      .icon {
+        margin-right: var(--spacing);
+        flex-shrink: 0;
+        color: var(--text-secondary-color);
+      }
+
+      .name {
+        flex-shrink: 1;
+        min-width: 0;
+        margin-right: var(--spacing);
+        font-weight: var(--font-weight-semibold);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .until {
+        flex-grow: 1;
+        flex-shrink: 0;
+        margin-right: var(--spacing-half);
+        color: var(--text-secondary-color);
+        text-align: right;
+        white-space: nowrap;
+      }
+
+      .unsnooze-button {
+        flex-shrink: 0;
+      }
+    }
+  }
+}

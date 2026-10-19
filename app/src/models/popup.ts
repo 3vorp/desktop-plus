@@ -84,6 +84,8 @@ export enum PopupType {
   ChangeRepositoryAlias = 'ChangeRepositoryAlias',
   CreateRepositoryGroup = 'CreateRepositoryGroup',
   DeleteRepositoryGroup = 'DeleteRepositoryGroup',
+  SnoozeRepository = 'SnoozeRepository',
+  SnoozedRepositories = 'SnoozedRepositories',
   ThankYou = 'ThankYou',
   CommitMessage = 'CommitMessage',
   MultiCommitOperation = 'MultiCommitOperation',
@@ -407,6 +409,8 @@ export type PopupDetail =
       groupName: string
       repositories: ReadonlyArray<Repository>
     }
+  | { type: PopupType.SnoozeRepository; repository: Repository }
+  | { type: PopupType.SnoozedRepositories }
   | {
       type: PopupType.ThankYou
       userContributions: ReadonlyArray<ReleaseNote>

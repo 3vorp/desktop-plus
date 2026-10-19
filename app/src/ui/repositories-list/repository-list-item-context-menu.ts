@@ -28,6 +28,7 @@ interface IRepositoryListItemContextMenuConfig {
   onShowRepository: (repository: Repositoryish, path?: string) => void
   onOpenInExternalEditor: (repository: Repositoryish, path?: string) => void
   onRemoveRepository: (repository: Repositoryish) => void
+  onSnoozeRepository: (repository: Repository) => void
   onChangeRepositoryAlias: (repository: Repository) => void
   onRemoveRepositoryAlias: (repository: Repository) => void
   /** Opens the dialog to create a new group, preselecting this repository */
@@ -113,6 +114,14 @@ export const generateRepositoryListContextMenu = (
       enabled: !missing,
     },
     { type: 'separator' },
+    ...(repository instanceof Repository
+      ? [
+          {
+            label: 'Snooze…',
+            action: () => config.onSnoozeRepository(repository),
+          },
+        ]
+      : []),
     {
       label: config.askForConfirmationOnRemoveRepository ? 'Remove…' : 'Remove',
       action: () => config.onRemoveRepository(repository),

@@ -266,6 +266,51 @@
     margin-right: var(--spacing-half);
   }
 
+  &:has(> .snoozed-repositories-button) {
+    flex-direction: column;
+
+    > .filter-list {
+      min-height: 0;
+    }
+  }
+
+  .snoozed-repositories-button {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    min-width: 0;
+    height: 29px;
+    padding: 0 var(--spacing);
+    background: transparent;
+    border: none;
+    border-top: var(--base-border);
+    color: inherit;
+    font: inherit;
+    font-weight: var(--font-weight-semibold);
+    text-align: left;
+    cursor: pointer;
+
+    &:focus-visible {
+      outline-offset: -2px;
+    }
+
+    .octicon {
+      flex-shrink: 0;
+      margin-right: var(--spacing-half);
+      color: var(--text-secondary-color-muted);
+    }
+
+    &:hover .octicon,
+    &:focus-visible .octicon {
+      color: var(--text-color);
+    }
+
+    .label {
+      @include ellipsis;
+      min-width: 0;
+    }
+  }
+
   // In narrow sidebars the buttons would leave the filter field too little
   // room to show its text, so they move to a row of their own above it
   @container repository-list (width < 250px) {

@@ -162,6 +162,8 @@ import { CommitDragElement } from './drag-elements/commit-drag-element'
 import classNames from 'classnames'
 import { MoveToApplicationsFolder } from './move-to-applications-folder'
 import { ChangeRepositoryAlias } from './change-repository-alias/change-repository-alias-dialog'
+import { SnoozeRepository } from './snooze-repository/snooze-repository-dialog'
+import { SnoozedRepositoriesDialog } from './snoozed-repositories/snoozed-repositories-dialog'
 import { CreateRepositoryGroup } from './create-repository-group/create-repository-group-dialog'
 import { DeleteRepositoryGroup } from './delete-repository-group/delete-repository-group-dialog'
 import { ThankYou } from './thank-you'
@@ -2639,6 +2641,25 @@ export class App extends React.Component<IAppProps, IAppState> {
           />
         )
       }
+      case PopupType.SnoozeRepository: {
+        return (
+          <SnoozeRepository
+            dispatcher={this.props.dispatcher}
+            repository={popup.repository}
+            onDismissed={onPopupDismissedFn}
+          />
+        )
+      }
+      case PopupType.SnoozedRepositories: {
+        return (
+          <SnoozedRepositoriesDialog
+            dispatcher={this.props.dispatcher}
+            repositories={this.state.repositories}
+            snoozedRepositories={this.state.snoozedRepositories}
+            onDismissed={onPopupDismissedFn}
+          />
+        )
+      }
       case PopupType.ThankYou:
         return (
           <ThankYou
@@ -3735,6 +3756,7 @@ export class App extends React.Component<IAppProps, IAppState> {
         onSelectionChanged={this.onSelectionChanged}
         repositories={repositories}
         recentRepositories={this.state.recentRepositories}
+        snoozedRepositories={this.state.snoozedRepositories}
         localRepositoryStateLookup={this.state.localRepositoryStateLookup}
         askForConfirmationOnRemoveRepository={
           this.state.askForConfirmationOnRepositoryRemoval
@@ -4052,8 +4074,16 @@ export class App extends React.Component<IAppProps, IAppState> {
       this.showWorktrees()
     }
 
+    const onSnoozeRepository = (repository: Repository) => {
+      this.props.dispatcher.showPopup({
+        type: PopupType.SnoozeRepository,
+        repository,
+      })
+    }
+
     const items = generateRepositoryListContextMenu({
       onRemoveRepository: this.removeRepository,
+      onSnoozeRepository: onSnoozeRepository,
       onShowRepository: this.showRepository,
       onOpenInShell: this.openInShell,
       onOpenInExternalEditor: this.openInExternalEditor,

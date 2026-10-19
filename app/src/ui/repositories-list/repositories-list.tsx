@@ -74,6 +74,9 @@ interface IRepositoriesListProps {
   readonly repositories: ReadonlyArray<Repositoryish>
   readonly recentRepositories: ReadonlyArray<number>
 
+  /** The ids of the snoozed repositories, mapped to when their snooze ends */
+  readonly snoozedRepositories: ReadonlyMap<number, number>
+
   /** A cache of the latest repository state values, keyed by the repository id */
   readonly localRepositoryStateLookup: ReadonlyMap<
     number,
@@ -438,6 +441,16 @@ export class RepositoriesList extends React.Component<
    * See findMatchingListItem for more details.
    */
   private getSelectedListItem = memoizeOne(findMatchingListItem)
+
+  private getUnsnoozedRepositories = memoizeOne(
+    (
+      repositories: ReadonlyArray<Repositoryish>,
+      snoozedRepositories: ReadonlyMap<number, number>
+    ) =>
+      repositories.filter(
+        r => !(r instanceof Repository && snoozedRepositories.has(r.id))
+      )
+  )
 
   private getOrderedRepositoryGroups = memoizeOne(applyRepositoryGroupOrder)
 
@@ -1214,6 +1227,7 @@ export class RepositoriesList extends React.Component<
     const items = generateRepositoryListContextMenu({
       worktreePath: item.worktree?.path,
       onRemoveRepository: this.props.onRemoveRepository,
+      onSnoozeRepository: this.onSnoozeRepository,
       onShowRepository: this.props.onShowRepository,
       onOpenInNewWindow: this.props.onOpenInNewWindow,
       onOpenInShell: this.props.onOpenInShell,
@@ -1259,8 +1273,13 @@ export class RepositoriesList extends React.Component<
       this.getGroupLabel(groups[group].identifier)
 
   public render() {
-    let groups = this.getRepositoryGroups(
+    const repositories = this.getUnsnoozedRepositories(
       this.props.repositories,
+      this.props.snoozedRepositories
+    )
+    const snoozedCount = this.props.repositories.length - repositories.length
+    let groups = this.getRepositoryGroups(
+      repositories,
       this.props.localRepositoryStateLookup,
       this.props.recentRepositories
     )
@@ -1319,6 +1338,7 @@ export class RepositoriesList extends React.Component<
           groups={groups}
           invalidationProps={{
             repositories: this.props.repositories,
+            snoozedRepositories: this.props.snoozedRepositories,
             filterText: this.props.filterText,
             localRepositoryStateLookup: this.props.localRepositoryStateLookup,
             showWorktreesInRepoList: this.props.showWorktreesInRepoList,
@@ -1336,10 +1356,36 @@ export class RepositoriesList extends React.Component<
             this.props.filterText
           )}
         />
+        {this.renderSnoozedRepositoriesButton(snoozedCount)}
         {this.renderGroupDragElement()}
         <AriaLiveContainer message={this.state.groupOrderMessage} />
       </div>
     )
+  }
+
+  private renderSnoozedRepositoriesButton(count: number) {
+    if (count === 0) {
+      return null
+    }
+
+    const label = __DARWIN__
+      ? `Snoozed Repositories (${count})`
+      : `Snoozed repositories (${count})`
+
+    return (
+      <button
+        type="button"
+        className="snoozed-repositories-button"
+        onClick={this.onSnoozedRepositoriesButtonClick}
+      >
+        <Octicon symbol={octicons.clock} />
+        <span className="label">{label}</span>
+      </button>
+    )
+  }
+
+  private onSnoozedRepositoriesButtonClick = () => {
+    this.props.dispatcher.showPopup({ type: PopupType.SnoozedRepositories })
   }
 
   private getLastItemGroupKeys(
@@ -1596,6 +1642,13 @@ export class RepositoriesList extends React.Component<
 
   private onRemoveRepositoryAlias = (repository: Repository) => {
     this.props.dispatcher.changeRepositoryAlias(repository, null)
+  }
+
+  private onSnoozeRepository = (repository: Repository) => {
+    this.props.dispatcher.showPopup({
+      type: PopupType.SnoozeRepository,
+      repository,
+    })
   }
 
   private onCreateWorktree = (repository: Repository) => {

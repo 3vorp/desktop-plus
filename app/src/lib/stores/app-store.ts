@@ -511,8 +511,17 @@ import {
 } from '../../models/worktree'
 import { shouldShowWorktreeDropdown } from '../worktree-dropdown'
 import type { Model } from '../copilot/types'
+import {
+  areSnoozesEqual,
+  getActiveSnoozes,
+  getSnoozedRepositories,
+  setSnoozedRepositories,
+} from './repository-snoozing'
 
 const LastSelectedRepositoryIDKey = 'last-selected-repository-id'
+
+/** Keeps the snooze expiry timer within setTimeout's 32-bit delay limit */
+const MaxSnoozeExpiryDelay = 24 * 60 * 60 * 1000
 
 /**
  * Upper bound on how many pull requests we'll resolve (across both sides)
@@ -697,6 +706,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private accounts: ReadonlyArray<Account> = new Array<Account>()
   private repositories: ReadonlyArray<Repository> = new Array<Repository>()
   private recentRepositories: ReadonlyArray<number> = new Array<number>()
+
+  /** The ids of the snoozed repositories, mapped to when their snooze ends */
+  private snoozedRepositories: ReadonlyMap<number, number> = new Map()
+  private snoozeExpiryTimeoutId: number | null = null
 
   private selectedRepository: Repository | CloningRepository | null = null
 
@@ -1418,6 +1431,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
       accounts: this.accounts,
       repositories,
       recentRepositories: this.recentRepositories,
+      snoozedRepositories: this.snoozedRepositories,
       localRepositoryStateLookup: this.localRepositoryStateLookup,
       windowState: this.windowState,
       windowZoomFactor: this.windowZoomFactor,
@@ -2707,6 +2721,14 @@ export class AppStore extends TypedBaseStore<IAppState> {
       this.currentOnboardingTutorialStep = TutorialStep.NotApplicable
     }
 
+    // Selecting a snoozed repository means the user wants to work on it again
+    if (
+      repository instanceof Repository &&
+      this.snoozedRepositories.has(repository.id)
+    ) {
+      this.removeSnooze(repository)
+    }
+
     this.selectedRepository = repository
 
     this.emitUpdate()
@@ -3033,6 +3055,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
       accounts.some(account => this.accountsStore.isRefreshable(account))
     )
     this.alwaysShowWorktreeList = getBoolean(alwaysShowWorktreeListKey, false)
+    this.refreshSnoozedRepositories()
 
     // Must be read before selecting the initial repository, since that's what
     // populates the list of visible recent repositories.
@@ -3636,6 +3659,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
       if (!newSelectedRepository) {
         newSelectedRepository = this.repositories[0]
+      }
+
+      if (this.snoozedRepositories.has(newSelectedRepository.id)) {
+        newSelectedRepository = this.getFirstUnsnoozedRepository()
       }
     }
 
@@ -5016,7 +5043,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
       this.selectedRepository instanceof Repository
         ? this.selectedRepository.id
         : null
-    return this.repositories.filter(x => x.id !== selectedRepositoryID)
+    return this.repositories
+      .filter(x => x.id !== selectedRepositoryID)
+      .filter(x => !this.snoozedRepositories.has(x.id))
   }
 
   /**
@@ -5933,6 +5962,87 @@ export class AppStore extends TypedBaseStore<IAppState> {
   }
 
   /** This shouldn't be called directly. See `Dispatcher`. */
+  public async _snoozeRepository(
+    repository: Repository,
+    until: number
+  ): Promise<void> {
+    // Re-read from storage so we don't drop changes made in other windows
+    const snoozed = new Map(getSnoozedRepositories())
+    snoozed.set(repository.id, until)
+    setSnoozedRepositories(snoozed)
+    this.refreshSnoozedRepositories()
+    this.emitUpdate()
+
+    if (
+      this.selectedRepository instanceof Repository &&
+      this.selectedRepository.id === repository.id
+    ) {
+      await this._selectRepository(this.getFirstUnsnoozedRepository())
+    }
+  }
+
+  /** This shouldn't be called directly. See `Dispatcher`. */
+  public async _unsnoozeRepository(repository: Repository): Promise<void> {
+    this.removeSnooze(repository)
+    this.emitUpdate()
+
+    // Its indicators went stale while it wasn't being refreshed
+    this.refreshIndicatorForRepository(repository, false).catch(e =>
+      log.error('Failed refreshing indicator of unsnoozed repository', e)
+    )
+  }
+
+  private removeSnooze(repository: Repository) {
+    const snoozed = new Map(getSnoozedRepositories())
+    snoozed.delete(repository.id)
+    setSnoozedRepositories(snoozed)
+    this.refreshSnoozedRepositories()
+  }
+
+  private getFirstUnsnoozedRepository(): Repository | null {
+    return (
+      this.repositories.find(r => !this.snoozedRepositories.has(r.id)) ?? null
+    )
+  }
+
+  /**
+   * Reloads the snoozed repositories from storage, dropping the expired ones,
+   * and schedules the next refresh for when the earliest snooze ends.
+   *
+   * Returns whether the snoozed repositories changed.
+   */
+  private refreshSnoozedRepositories(): boolean {
+    const stored = getSnoozedRepositories()
+    const active = getActiveSnoozes(stored, Date.now())
+    if (active.size !== stored.size) {
+      setSnoozedRepositories(active)
+    }
+    // Keeps the reference stable so the repository list stays memoized
+    const changed = !areSnoozesEqual(active, this.snoozedRepositories)
+    if (changed) {
+      this.snoozedRepositories = active
+    }
+
+    if (this.snoozeExpiryTimeoutId !== null) {
+      window.clearTimeout(this.snoozeExpiryTimeoutId)
+      this.snoozeExpiryTimeoutId = null
+    }
+
+    if (active.size > 0) {
+      const nextExpiry = Math.min(...active.values())
+      const delay = Math.min(nextExpiry - Date.now(), MaxSnoozeExpiryDelay)
+      this.snoozeExpiryTimeoutId = window.setTimeout(() => {
+        this.snoozeExpiryTimeoutId = null
+        if (this.refreshSnoozedRepositories()) {
+          this.emitUpdate()
+        }
+      }, Math.max(delay, 0))
+    }
+
+    return changed
+  }
+
+  /** This shouldn't be called directly. See `Dispatcher`. */
   public async _renameBranch(
     repository: Repository,
     branch: Branch,
@@ -6644,7 +6754,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
   public async _pullAllRepositories(): Promise<void> {
     const repositories = await this.repositoriesStore.getAll()
-    return this._pullRepositories(repositories)
+    return this._pullRepositories(
+      repositories.filter(r => !this.snoozedRepositories.has(r.id))
+    )
   }
 
   public async _pullRepositories(
@@ -9569,6 +9681,16 @@ export class AppStore extends TypedBaseStore<IAppState> {
   }
 
   public async _setAppFocusState(isFocused: boolean): Promise<void> {
+    // Timers don't advance while the computer sleeps, and other windows may
+    // have changed the snoozes. Gaining focus already emits an update below.
+    if (
+      isFocused &&
+      this.refreshSnoozedRepositories() &&
+      this.appIsFocused === isFocused
+    ) {
+      this.emitUpdate()
+    }
+
     if (this.appIsFocused !== isFocused) {
       this.appIsFocused = isFocused
       this.emitUpdate()

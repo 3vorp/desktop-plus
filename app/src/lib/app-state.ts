@@ -109,6 +109,12 @@ export interface IAppState {
   readonly recentRepositories: ReadonlyArray<number>
 
   /**
+   * The ids of the repositories hidden from the repository list until a given
+   * time, mapped to that time in milliseconds since the epoch
+   */
+  readonly snoozedRepositories: ReadonlyMap<number, number>
+
+  /**
    * A cache of the latest repository state values, keyed by the repository id
    */
   readonly localRepositoryStateLookup: Map<number, ILocalRepositoryState>
