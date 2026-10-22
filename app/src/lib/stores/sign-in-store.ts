@@ -40,6 +40,7 @@ import { RepoType } from '../../models/github-repository'
 import { isGHES } from '../endpoint-capabilities'
 import { exchangeOAuthToken, IOAuthToken } from '../oauth-token'
 import { exchangeThirdPartyOAuthToken } from '../third-party-oauth-token'
+import { shouldRequestShortLivedTokens } from '../short-lived-token-rollout'
 
 /**
  * An enumeration of the possible steps that the sign in
@@ -491,7 +492,8 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
       )
     }
 
-    this.setState({ ...currentState, loading: true })
+    const authenticatingState = { ...currentState, loading: true }
+    this.setState(authenticatingState)
     const loadingState = this.state
 
     const conflict = await this.accountStore.findApiTypeConflict(
@@ -513,6 +515,13 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
       if (this.accounts.find(x => x.endpoint === existingAccount.endpoint)) {
         await this.accountStore.removeAccount(existingAccount)
       }
+    }
+
+    const shortLived = await shouldRequestShortLivedTokens(
+      currentState.endpoint
+    )
+    if (this.state !== authenticatingState) {
+      return
     }
 
     const csrfToken = crypto.randomUUID()
@@ -547,7 +556,8 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
           oauthProvider,
           endpoint,
           csrfToken,
-          codeChallenge
+          codeChallenge,
+          shortLived
         )
       )
     })
@@ -586,11 +596,17 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
     oauthProvider: RepoType,
     endpoint: string,
     csrfToken: string,
-    codeChallenge: string
+    codeChallenge: string,
+    shortLived: boolean
   ): string {
     switch (oauthProvider) {
       case 'github':
-        return getOAuthAuthorizationURL(endpoint, csrfToken, codeChallenge)
+        return getOAuthAuthorizationURL(
+          endpoint,
+          csrfToken,
+          codeChallenge,
+          shortLived
+        )
       case 'bitbucket':
         return getBitbucketOAuthAuthorizationURL(csrfToken, codeChallenge)
       case 'gitlab':
