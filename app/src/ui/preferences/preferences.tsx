@@ -129,6 +129,7 @@ interface IPreferencesProps {
   readonly selectedDiffFontFamily: DiffFontFamily
   readonly useCustomEditor: boolean
   readonly customEditor: ICustomIntegration | null
+  readonly useSystemDefaultProgram: boolean
   readonly useCustomShell: boolean
   readonly customShell: ICustomIntegration | null
   readonly copilotAppPath: string | null
@@ -183,6 +184,7 @@ interface IPreferencesState {
   readonly availableEditors: ReadonlyArray<string>
   readonly useCustomEditor: boolean
   readonly customEditor: ICustomIntegration
+  readonly useSystemDefaultProgram: boolean
   readonly useCustomShell: boolean
   readonly customShell: ICustomIntegration
   readonly copilotAppPath: string
@@ -269,6 +271,7 @@ export class Preferences extends React.Component<
       availableEditors: [],
       useCustomEditor: this.props.useCustomEditor,
       customEditor: this.props.customEditor ?? DefaultCustomIntegration,
+      useSystemDefaultProgram: this.props.useSystemDefaultProgram,
       useCustomShell: this.props.useCustomShell,
       customShell: this.props.customShell ?? DefaultCustomIntegration,
       copilotAppPath: this.props.copilotAppPath ?? '',
@@ -399,6 +402,7 @@ export class Preferences extends React.Component<
       availableEditors,
       useCustomEditor: this.props.useCustomEditor,
       customEditor: this.props.customEditor ?? DefaultCustomIntegration,
+      useSystemDefaultProgram: this.props.useSystemDefaultProgram,
       useCustomShell: this.props.useCustomShell,
       customShell: this.props.customShell ?? DefaultCustomIntegration,
       copilotAppPath: this.props.copilotAppPath ?? '',
@@ -668,6 +672,7 @@ export class Preferences extends React.Component<
             selectedShell={this.state.selectedShell}
             useCustomEditor={this.state.useCustomEditor}
             customEditor={this.state.customEditor}
+            useSystemDefaultProgram={this.state.useSystemDefaultProgram}
             useCustomShell={this.state.useCustomShell}
             customShell={this.state.customShell}
             copilotAppPath={this.state.copilotAppPath}
@@ -676,6 +681,9 @@ export class Preferences extends React.Component<
             onSelectedShellChanged={this.onSelectedShellChanged}
             onUseCustomEditorChanged={this.onUseCustomEditorChanged}
             onCustomEditorChanged={this.onCustomEditorChanged}
+            onUseSystemDefaultProgramChanged={
+              this.onUseSystemDefaultProgramChanged
+            }
             onUseCustomShellChanged={this.onUseCustomShellChanged}
             onCustomShellChanged={this.onCustomShellChanged}
             onCopilotAppPathChanged={this.onCopilotAppPathChanged}
@@ -1083,6 +1091,12 @@ export class Preferences extends React.Component<
     this.setState({ customEditor })
   }
 
+  private onUseSystemDefaultProgramChanged = (
+    useSystemDefaultProgram: boolean
+  ) => {
+    this.setState({ useSystemDefaultProgram })
+  }
+
   private onUseCustomShellChanged = (useCustomShell: boolean) => {
     this.setState({ useCustomShell })
   }
@@ -1398,6 +1412,8 @@ export class Preferences extends React.Component<
       customShell,
       branchPresetScript,
     } = this.state
+
+    dispatcher.setUseSystemDefaultProgram(this.state.useSystemDefaultProgram)
 
     const isValidCustomEditor =
       customEditor && (await isValidCustomIntegration(customEditor))

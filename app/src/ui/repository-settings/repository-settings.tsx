@@ -41,6 +41,7 @@ import {
 } from '../../lib/custom-integration'
 import { getAvailableEditors } from '../../lib/editors/lookup'
 import { UpdateBranchStrategy } from '../../lib/update-branch-strategy'
+import { EditorOverride } from '../../models/editor-override'
 
 interface IRepositorySettingsProps {
   readonly initialSelectedTab?: RepositorySettingsTab
@@ -87,6 +88,7 @@ interface IRepositorySettingsState {
   readonly selectedExternalEditor: string | null
   readonly useCustomEditor: boolean
   readonly customEditor: ICustomIntegration
+  readonly useSystemDefaultProgram: boolean
   readonly repositoryAccount: Account | null
 }
 
@@ -129,6 +131,8 @@ export class RepositorySettings extends React.Component<
         path: '',
         arguments: TargetPathArgument,
       },
+      useSystemDefaultProgram:
+        props.repository.customEditorOverride?.useSystemDefaultProgram ?? false,
       repositoryAccount: props.repositoryAccount,
     }
   }
@@ -353,6 +357,10 @@ export class RepositorySettings extends React.Component<
             onSelectedEditorChanged={this.onSelectedEditorChanged}
             onUseCustomEditorChanged={this.onUseCustomEditorChanged}
             onCustomEditorChanged={this.onCustomEditorChanged}
+            useSystemDefaultProgram={this.state.useSystemDefaultProgram}
+            onUseSystemDefaultProgramChanged={
+              this.onUseSystemDefaultProgramChanged
+            }
           />
         )
       }
@@ -497,27 +505,23 @@ export class RepositorySettings extends React.Component<
       this.props.dispatcher.refreshAuthor(this.props.repository)
     }
 
+    const newEditorOverride: EditorOverride | null = this.state.useDefaultEditor
+      ? null
+      : {
+          selectedExternalEditor: this.state.selectedExternalEditor,
+          useCustomEditor: this.state.useCustomEditor,
+          customEditor: this.state.customEditor,
+          useSystemDefaultProgram: this.state.useSystemDefaultProgram,
+        }
     if (
-      this.state.useDefaultEditor !==
-        !this.props.repository.customEditorOverride ||
-      this.state.selectedExternalEditor !==
-        this.props.repository.customEditorOverride?.selectedExternalEditor ||
-      this.state.useCustomEditor !==
-        this.props.repository.customEditorOverride.useCustomEditor ||
-      this.state.customEditor.path !==
-        this.props.repository.customEditorOverride.customEditor?.path ||
-      this.state.customEditor.arguments !==
-        this.props.repository.customEditorOverride.customEditor.arguments
+      hasEditorOverrideChanged(
+        this.props.repository.customEditorOverride,
+        newEditorOverride
+      )
     ) {
       await this.props.dispatcher.updateRepositoryEditorOverride(
         this.props.repository,
-        this.state.useDefaultEditor
-          ? null
-          : {
-              selectedExternalEditor: this.state.selectedExternalEditor,
-              useCustomEditor: this.state.useCustomEditor,
-              customEditor: this.state.customEditor,
-            }
+        newEditorOverride
       )
     }
 
@@ -603,4 +607,28 @@ export class RepositorySettings extends React.Component<
   private onCustomEditorChanged = (customEditor: ICustomIntegration) => {
     this.setState({ customEditor })
   }
+
+  private onUseSystemDefaultProgramChanged = (
+    useSystemDefaultProgram: boolean
+  ) => {
+    this.setState({ useSystemDefaultProgram })
+  }
+}
+
+function hasEditorOverrideChanged(
+  previous: EditorOverride | null,
+  next: EditorOverride | null
+): boolean {
+  if (previous === null || next === null) {
+    return previous !== next
+  }
+
+  return (
+    previous.selectedExternalEditor !== next.selectedExternalEditor ||
+    previous.useCustomEditor !== next.useCustomEditor ||
+    previous.customEditor?.path !== next.customEditor?.path ||
+    previous.customEditor?.arguments !== next.customEditor?.arguments ||
+    (previous.useSystemDefaultProgram ?? false) !==
+      (next.useSystemDefaultProgram ?? false)
+  )
 }

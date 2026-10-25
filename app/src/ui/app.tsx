@@ -255,7 +255,10 @@ import { PullBranchDeletedDialog } from './pull-branch-deleted/pull-branch-delet
 import { ManageRemotesDialog } from './manage-remotes/manage-remotes-dialog'
 import { AddRemoteDialog } from './manage-remotes/add-remote-dialog'
 import { PushToRemoteDialog } from './push-to-remote/push-to-remote-dialog'
-import { getEditorOverrideLabel } from '../models/editor-override'
+import {
+  getEditorOverrideLabel,
+  SystemDefaultProgramLabel,
+} from '../models/editor-override'
 import { IDeleteWorktreeOptions, WorktreeEntry } from '../models/worktree'
 import { shouldShowWorktreeDropdown } from '../lib/worktree-dropdown'
 
@@ -1559,6 +1562,9 @@ export class App extends React.Component<IAppProps, IAppState> {
   }
 
   private get defaultExternalEditorLabel() {
+    if (this.state.useSystemDefaultProgram) {
+      return SystemDefaultProgramLabel
+    }
     return this.state.useCustomEditor
       ? undefined
       : this.state.selectedExternalEditor ?? undefined
@@ -1988,6 +1994,7 @@ export class App extends React.Component<IAppProps, IAppState> {
             selectedDiffFontSize={this.state.selectedDiffFontSize}
             selectedDiffFontFamily={this.state.selectedDiffFontFamily}
             useCustomEditor={this.state.useCustomEditor}
+            useSystemDefaultProgram={this.state.useSystemDefaultProgram}
             customEditor={this.state.customEditor}
             useCustomShell={this.state.useCustomShell}
             customShell={this.state.customShell}
@@ -2792,7 +2799,11 @@ export class App extends React.Component<IAppProps, IAppState> {
             openFileInExternalEditor={this.getOpenFileInExternalEditorHandler(
               popup.repository
             )}
-            resolvedExternalEditor={this.state.resolvedExternalEditor}
+            resolvedExternalEditor={
+              this.state.useSystemDefaultProgram
+                ? SystemDefaultProgramLabel
+                : this.state.resolvedExternalEditor
+            }
             openRepositoryInShell={this.openCurrentRepositoryInShell}
             wrapDiffLines={this.state.wrapDiffLines}
           />
@@ -4516,7 +4527,9 @@ export class App extends React.Component<IAppProps, IAppState> {
           }
           accounts={state.accounts}
           isExternalEditorAvailable={
-            state.useCustomEditor || state.selectedExternalEditor !== null
+            state.useCustomEditor ||
+            state.selectedExternalEditor !== null ||
+            state.useSystemDefaultProgram
           }
           externalEditorLabel={this.getExternalEditorLabel(
             selectedState.repository

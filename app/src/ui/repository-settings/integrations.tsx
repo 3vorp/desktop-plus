@@ -10,6 +10,7 @@ import { CustomIntegrationForm } from '../preferences/custom-integration-form'
 
 const CustomIntegrationValue = 'other'
 const DoNotOverrideValue = 'do-not-override'
+const SystemDefaultProgramValue = 'system-default-program'
 
 interface IIntegrationsPreferencesProps {
   readonly availableEditors: ReadonlyArray<string>
@@ -17,10 +18,14 @@ interface IIntegrationsPreferencesProps {
   readonly selectedExternalEditor: string | null
   readonly useCustomEditor: boolean
   readonly customEditor: ICustomIntegration
+  readonly useSystemDefaultProgram: boolean
   readonly onSelectedEditorChanged: (editor: string) => void
   readonly onUseDefaultEditorChanged: (useDefaultEditor: boolean) => void
   readonly onUseCustomEditorChanged: (useCustomEditor: boolean) => void
   readonly onCustomEditorChanged: (customEditor: ICustomIntegration) => void
+  readonly onUseSystemDefaultProgramChanged: (
+    useSystemDefaultProgram: boolean
+  ) => void
 }
 
 interface IIntegrationsPreferencesState {
@@ -28,6 +33,7 @@ interface IIntegrationsPreferencesState {
   readonly selectedExternalEditor: string | null
   readonly useCustomEditor: boolean
   readonly customEditor: ICustomIntegration
+  readonly useSystemDefaultProgram: boolean
 }
 
 export class Integrations extends React.Component<
@@ -44,6 +50,7 @@ export class Integrations extends React.Component<
       selectedExternalEditor: this.props.selectedExternalEditor,
       useCustomEditor: this.props.useCustomEditor,
       customEditor: this.props.customEditor,
+      useSystemDefaultProgram: this.props.useSystemDefaultProgram,
     }
   }
 
@@ -67,19 +74,30 @@ export class Integrations extends React.Component<
       selectedExternalEditor,
       useCustomEditor: nextProps.useCustomEditor,
       customEditor: nextProps.customEditor,
+      useSystemDefaultProgram: nextProps.useSystemDefaultProgram,
     })
   }
 
   public componentDidMount(): void {
     if (enableCustomIntegration()) {
-      const { availableEditors, useCustomEditor } = this.props
+      const {
+        availableEditors,
+        useCustomEditor,
+        useDefaultEditor,
+        useSystemDefaultProgram,
+      } = this.props
 
       // When there are no available editors or shells, the `Select` component
       // will have the custom editor or shell already selected, but we need
       // to handle that as initial value, otherwise the custom integration
       // form won't be rendered.
 
-      if (availableEditors.length === 0 && !useCustomEditor) {
+      if (
+        availableEditors.length === 0 &&
+        !useCustomEditor &&
+        !useDefaultEditor &&
+        !useSystemDefaultProgram
+      ) {
         this.setSelectedEditor(CustomIntegrationValue)
       }
     }
@@ -108,22 +126,21 @@ export class Integrations extends React.Component<
   }
 
   private setSelectedEditor = (editor: string) => {
-    if (editor === CustomIntegrationValue) {
-      this.setState({ useCustomEditor: true })
-      this.props.onUseCustomEditorChanged(true)
-      this.props.onUseDefaultEditorChanged(false)
-    } else if (editor === DoNotOverrideValue) {
-      this.setState({ useDefaultEditor: false })
-      this.props.onUseDefaultEditorChanged(true)
-      this.props.onUseCustomEditorChanged(false)
-    } else {
-      this.setState({
-        useDefaultEditor: false,
-        useCustomEditor: false,
-        selectedExternalEditor: editor,
-      })
-      this.props.onUseDefaultEditorChanged(false)
-      this.props.onUseCustomEditorChanged(false)
+    const useDefaultEditor = editor === DoNotOverrideValue
+    const useCustomEditor = editor === CustomIntegrationValue
+    const useSystemDefaultProgram = editor === SystemDefaultProgramValue
+
+    this.setState({
+      useDefaultEditor,
+      useCustomEditor,
+      useSystemDefaultProgram,
+    })
+    this.props.onUseDefaultEditorChanged(useDefaultEditor)
+    this.props.onUseCustomEditorChanged(useCustomEditor)
+    this.props.onUseSystemDefaultProgramChanged(useSystemDefaultProgram)
+
+    if (!useDefaultEditor && !useCustomEditor && !useSystemDefaultProgram) {
+      this.setState({ selectedExternalEditor: editor })
       this.props.onSelectedEditorChanged(editor)
     }
   }
@@ -138,6 +155,14 @@ export class Integrations extends React.Component<
       >
         <option key={DoNotOverrideValue} value={DoNotOverrideValue}>
           {__DARWIN__ ? 'Use Default Editor' : 'Use default editor'}
+        </option>
+        <option
+          key={SystemDefaultProgramValue}
+          value={SystemDefaultProgramValue}
+        >
+          {__DARWIN__
+            ? 'Use System Default Program'
+            : 'Use system default program'}
         </option>
         {options.map(n => (
           <option key={n} value={n}>
@@ -157,6 +182,9 @@ export class Integrations extends React.Component<
     }
     if (this.state.useDefaultEditor) {
       return DoNotOverrideValue
+    }
+    if (this.state.useSystemDefaultProgram) {
+      return SystemDefaultProgramValue
     }
     return this.state.selectedExternalEditor ?? undefined
   }

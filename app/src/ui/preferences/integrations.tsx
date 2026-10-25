@@ -22,6 +22,7 @@ import {
 } from '../../models/copy-path-normalization'
 
 const CustomIntegrationValue = 'other'
+const SystemDefaultProgramValue = 'system-default-program'
 
 const BranchPresetScriptDocumentationUrl =
   'https://github.com/desktop-plus/desktop-plus/blob/main/docs/branch-name-presets.md'
@@ -33,6 +34,7 @@ interface IIntegrationsPreferencesProps {
   readonly selectedShell: Shell
   readonly useCustomEditor: boolean
   readonly customEditor: ICustomIntegration
+  readonly useSystemDefaultProgram: boolean
   readonly useCustomShell: boolean
   readonly customShell: ICustomIntegration
   readonly copilotAppPath: string
@@ -42,6 +44,9 @@ interface IIntegrationsPreferencesProps {
   readonly onSelectedShellChanged: (shell: Shell) => void
   readonly onUseCustomEditorChanged: (useCustomEditor: boolean) => void
   readonly onCustomEditorChanged: (customEditor: ICustomIntegration) => void
+  readonly onUseSystemDefaultProgramChanged: (
+    useSystemDefaultProgram: boolean
+  ) => void
   readonly onUseCustomShellChanged: (useCustomShell: boolean) => void
   readonly onCustomShellChanged: (customShell: ICustomIntegration) => void
   readonly onCopilotAppPathChanged: (path: string) => void
@@ -59,6 +64,7 @@ interface IIntegrationsPreferencesState {
   readonly selectedShell: Shell
   readonly useCustomEditor: boolean
   readonly customEditor: ICustomIntegration
+  readonly useSystemDefaultProgram: boolean
   readonly useCustomShell: boolean
   readonly customShell: ICustomIntegration
   readonly copilotAppPath: string
@@ -81,6 +87,7 @@ export class Integrations extends React.Component<
       selectedShell: this.props.selectedShell,
       useCustomEditor: this.props.useCustomEditor,
       customEditor: this.props.customEditor,
+      useSystemDefaultProgram: this.props.useSystemDefaultProgram,
       useCustomShell: this.props.useCustomShell,
       customShell: this.props.customShell,
       copilotAppPath: this.props.copilotAppPath,
@@ -121,6 +128,7 @@ export class Integrations extends React.Component<
       useCustomShell: nextProps.useCustomShell,
       customShell: nextProps.customShell,
       customEditor: nextProps.customEditor,
+      useSystemDefaultProgram: nextProps.useSystemDefaultProgram,
       copilotAppPath: nextProps.copilotAppPath,
     })
   }
@@ -139,7 +147,11 @@ export class Integrations extends React.Component<
       // to handle that as initial value, otherwise the custom integration
       // form won't be rendered.
 
-      if (availableEditors.length === 0 && !useCustomEditor) {
+      if (
+        availableEditors.length === 0 &&
+        !useCustomEditor &&
+        !this.props.useSystemDefaultProgram
+      ) {
         this.setSelectedEditor(CustomIntegrationValue)
       }
 
@@ -176,6 +188,16 @@ export class Integrations extends React.Component<
   }
 
   private setSelectedEditor = (editor: string) => {
+    if (editor === SystemDefaultProgramValue) {
+      this.setState({ useSystemDefaultProgram: true, useCustomEditor: false })
+      this.props.onUseSystemDefaultProgramChanged(true)
+      this.props.onUseCustomEditorChanged(false)
+      return
+    }
+
+    this.setState({ useSystemDefaultProgram: false })
+    this.props.onUseSystemDefaultProgramChanged(false)
+
     if (editor === CustomIntegrationValue) {
       this.setState({ useCustomEditor: true })
       this.props.onUseCustomEditorChanged(true)
@@ -244,7 +266,9 @@ export class Integrations extends React.Component<
         label={enableCustomIntegration() ? undefined : label}
         aria-label="External editor"
         value={
-          useCustomEditor
+          this.state.useSystemDefaultProgram
+            ? SystemDefaultProgramValue
+            : useCustomEditor
             ? CustomIntegrationValue
             : selectedExternalEditor ?? undefined
         }
@@ -255,6 +279,14 @@ export class Integrations extends React.Component<
             {n}
           </option>
         ))}
+        <option
+          key={SystemDefaultProgramValue}
+          value={SystemDefaultProgramValue}
+        >
+          {__DARWIN__
+            ? 'Use System Default Program'
+            : 'Use system default program'}
+        </option>
         {enableCustomIntegration() && (
           <option key={CustomIntegrationValue} value={CustomIntegrationValue}>
             {__DARWIN__

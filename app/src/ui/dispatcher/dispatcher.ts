@@ -3976,6 +3976,14 @@ export class Dispatcher {
     this.appStore._setUseCustomEditor(useCustomEditor)
   }
 
+  /**
+   * Set whether or not the user wants to open paths with the program
+   * associated with them by the operating system
+   */
+  public setUseSystemDefaultProgram(useSystemDefaultProgram: boolean) {
+    this.appStore._setUseSystemDefaultProgram(useSystemDefaultProgram)
+  }
+
   /** Set the custom external editor info */
   public setCustomEditor(customEditor: ICustomIntegration) {
     this.appStore._setCustomEditor(customEditor)

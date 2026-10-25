@@ -433,6 +433,12 @@ export interface IAppState {
   /** Info needed to launch a custom editor chosen by the user. */
   readonly customEditor: ICustomIntegration | null
 
+  /**
+   * Whether or not the user wants to open paths with the program associated
+   * with them by the operating system instead of an external editor.
+   */
+  readonly useSystemDefaultProgram: boolean
+
   /** Whether or not the user wants to use a custom shell. */
   readonly useCustomShell: boolean
 
