@@ -91,6 +91,7 @@ export abstract class CherryPick extends BaseMultiCommitOperation {
         recentBranches={recentBranches}
         currentBranch={currentBranch}
         onCherryPick={this.onChooseBranch}
+        onCherryPickToMultipleBranches={this.onChooseBranches}
         onDismissed={this.onFlowEnded}
         commitCount={commits.length}
         onCreateNewBranch={this.onCreateNewBranch}
@@ -167,6 +168,27 @@ export abstract class CherryPick extends BaseMultiCommitOperation {
     dispatcher.setMultiCommitOperationTargetBranch(repository, targetBranch)
     dispatcher.setCherryPickBranchCreated(repository, false)
     dispatcher.cherryPick(repository, targetBranch, commits, sourceBranch)
+  }
+
+  private onChooseBranches = (targetBranches: ReadonlyArray<Branch>) => {
+    const {
+      dispatcher,
+      repository,
+      state: { operationDetail },
+    } = this.props
+
+    if (operationDetail.kind !== MultiCommitOperationKind.CherryPick) {
+      this.endFlowInvalidState()
+      return
+    }
+
+    const { commits, sourceBranch } = operationDetail
+    dispatcher.cherryPickToBranches(
+      repository,
+      targetBranches,
+      commits,
+      sourceBranch
+    )
   }
 
   private onCreateNewBranch = (targetBranchName: string) => {

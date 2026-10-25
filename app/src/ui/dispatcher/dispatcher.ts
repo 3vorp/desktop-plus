@@ -124,6 +124,7 @@ import { ILastThankYou } from '../../models/last-thank-you'
 import { dragAndDropManager } from '../../lib/drag-and-drop-manager'
 import {
   CreateBranchStep,
+  ICherryPickTargetBranchQueue,
   MultiCommitOperationDetail,
   MultiCommitOperationKind,
   MultiCommitOperationStep,
@@ -2731,6 +2732,13 @@ export class Dispatcher {
           retryAction.commits,
           retryAction.sourceBranch
         )
+      case RetryActionType.CherryPickToBranches:
+        return this.cherryPickToBranches(
+          retryAction.repository,
+          retryAction.targetBranches,
+          retryAction.commits,
+          retryAction.sourceBranch
+        )
       case RetryActionType.CreateBranchForCherryPick:
         return this.startCherryPickWithBranchName(
           retryAction.repository,
@@ -3593,6 +3601,163 @@ export class Dispatcher {
     )
   }
 
+  /**
+   * Cherry-picks the commits onto each target branch in turn, then checks out
+   * the current branch again.
+   */
+  public async cherryPickToBranches(
+    repository: Repository,
+    targetBranches: ReadonlyArray<Branch>,
+    commits: ReadonlyArray<CommitOneLine>,
+    sourceBranch: Branch | null
+  ): Promise<void> {
+    const [firstBranch, ...remaining] = targetBranches
+    if (firstBranch === undefined) {
+      return
+    }
+
+    // Checked here because the retry action of `cherryPick` would only
+    // cherry-pick to the first branch.
+    const retry: RetryAction = {
+      type: RetryActionType.CherryPickToBranches,
+      repository,
+      targetBranches,
+      commits,
+      sourceBranch,
+    }
+
+    if (this.appStore._checkForUncommittedChanges(repository, retry)) {
+      this.endMultiCommitOperation(repository)
+      return
+    }
+
+    const { tip } = this.repositoryStateManager.get(repository).branchesState
+    const returnToBranch = tip.kind === TipState.Valid ? tip.branch : null
+
+    this.initializeMultiCommitOperationStateCherryPick(
+      repository,
+      firstBranch,
+      commits,
+      sourceBranch
+    )
+    this.setMultiCommitOperationTargetBranch(repository, firstBranch)
+    this.setCherryPickBranchCreated(repository, false)
+    this.setCherryPickTargetBranchQueue(repository, {
+      remaining,
+      completed: [],
+      returnToBranch,
+    })
+
+    return this.cherryPick(repository, firstBranch, commits, sourceBranch)
+  }
+
+  private setCherryPickTargetBranchQueue(
+    repository: Repository,
+    targetBranchQueue: ICherryPickTargetBranchQueue
+  ) {
+    const { multiCommitOperationState: mcos } =
+      this.repositoryStateManager.get(repository)
+
+    if (
+      mcos === null ||
+      mcos.operationDetail.kind !== MultiCommitOperationKind.CherryPick
+    ) {
+      log.error('[cherryPick] - Not in cherry-pick operation state')
+      return
+    }
+
+    const { operationDetail } = mcos
+    this.repositoryStateManager.updateMultiCommitOperationState(
+      repository,
+      () => ({
+        operationDetail: { ...operationDetail, targetBranchQueue },
+      })
+    )
+  }
+
+  /** @returns false if the operation is not a multi-branch cherry pick. */
+  private async continueCherryPickTargetBranchQueue(
+    repository: Repository,
+    targetBranchName: string,
+    commits: ReadonlyArray<CommitOneLine>,
+    sourceBranch: Branch | null
+  ): Promise<boolean> {
+    const { multiCommitOperationState: mcos } =
+      this.repositoryStateManager.get(repository)
+
+    if (
+      mcos === null ||
+      mcos.operationDetail.kind !== MultiCommitOperationKind.CherryPick ||
+      mcos.operationDetail.targetBranchQueue === undefined
+    ) {
+      return false
+    }
+
+    const { remaining, completed, returnToBranch } =
+      mcos.operationDetail.targetBranchQueue
+    const completedBranchNames = [...completed, targetBranchName]
+    const [nextBranch, ...rest] = remaining
+
+    if (nextBranch !== undefined) {
+      const retry: RetryAction = {
+        type: RetryActionType.CherryPickToBranches,
+        repository,
+        targetBranches: remaining,
+        commits,
+        sourceBranch,
+      }
+
+      if (this.appStore._checkForUncommittedChanges(repository, retry)) {
+        this.endMultiCommitOperation(repository)
+        return true
+      }
+
+      this.setCherryPickTargetBranchQueue(repository, {
+        remaining: rest,
+        completed: completedBranchNames,
+        returnToBranch,
+      })
+      this.setMultiCommitOperationTargetBranch(repository, nextBranch)
+      this.repositoryStateManager.updateMultiCommitOperationState(
+        repository,
+        () => ({
+          userHasResolvedConflicts: false,
+          useCopilotConflictResolution: false,
+          copilotResolutions: null,
+          copilotResolutionSummary: null,
+          copilotSkippedFiles: null,
+          copilotResolutionProgress: null,
+          copilotResolutionAbortController: null,
+          copilotResolutionModel: null,
+        })
+      )
+      await this.cherryPick(repository, nextBranch, commits, sourceBranch)
+      return true
+    }
+
+    if (returnToBranch !== null && returnToBranch.name !== targetBranchName) {
+      await this.appStore._checkoutBranchReturnName(repository, returnToBranch)
+    }
+
+    this.closePopup(PopupType.MultiCommitOperation)
+
+    await this.changeCommitSelection(repository, [commits[0].sha], true)
+
+    this.setBanner({
+      type: BannerType.SuccessfulMultiBranchCherryPick,
+      targetBranchNames: completedBranchNames,
+      count: commits.length,
+    })
+
+    this.statsStore.recordOperationSuccessful(
+      MultiCommitOperationKind.CherryPick
+    )
+
+    this.endMultiCommitOperation(repository)
+    await this.refreshRepository(repository)
+    return true
+  }
+
   public async startCherryPickWithBranchName(
     repository: Repository,
     targetBranchName: string,
@@ -3858,6 +4023,16 @@ export class Dispatcher {
 
     switch (cherryPickResult) {
       case CherryPickResult.CompletedWithoutError:
+        if (
+          await this.continueCherryPickTargetBranchQueue(
+            repository,
+            targetBranchName,
+            commits,
+            sourceBranch
+          )
+        ) {
+          break
+        }
         await this.changeCommitSelection(repository, [commits[0].sha], true)
         await this.completeMultiCommitOperation(repository, commits.length)
         break

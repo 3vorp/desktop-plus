@@ -154,6 +154,9 @@ interface IBranchListProps {
 
   /** Optional: Callback if option to fetch branches should exist */
   readonly onPullSingleBranch?: (branchName: string) => void
+
+  /** Optional: Forces the rows to re-render whenever it changes (by reference) */
+  readonly invalidationProps?: unknown
 }
 
 /** The Branches list component. */
@@ -181,11 +184,14 @@ export class BranchList extends React.Component<IBranchListProps> {
    * Using a guid which we used to do works but is overkill.
    */
   private getInvalidationProp = memoizeOne(
-    (_groups: ReturnType<typeof groupBranches>) => ({})
+    (
+      _groups: ReturnType<typeof groupBranches>,
+      _invalidationProps: unknown
+    ) => ({})
   )
 
   private get invalidationProp() {
-    return this.getInvalidationProp(this.groups)
+    return this.getInvalidationProp(this.groups, this.props.invalidationProps)
   }
 
   private get groups() {

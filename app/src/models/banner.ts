@@ -20,6 +20,7 @@ export enum BannerType {
   WorktreesEnabled = 'WorktreesEnabled',
   ConfigDirMigrated = 'ConfigDirMigrated',
   SuccessfulSignIn = 'SuccessfulSignIn',
+  SuccessfulMultiBranchCherryPick = 'SuccessfulMultiBranchCherryPick',
 }
 
 export type Banner =
@@ -134,4 +135,9 @@ export type Banner =
       readonly type: BannerType.SuccessfulSignIn
       readonly login: string
       readonly friendlyEndpoint: string
+    }
+  | {
+      readonly type: BannerType.SuccessfulMultiBranchCherryPick
+      readonly targetBranchNames: ReadonlyArray<string>
+      readonly count: number
     }

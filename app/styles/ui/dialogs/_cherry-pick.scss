@@ -35,6 +35,24 @@ dialog#cherry-pick {
         padding: 0;
       }
     }
+
+    .cherry-pick-target-branch {
+      display: flex;
+      align-items: center;
+      flex-grow: 1;
+      min-width: 0;
+      height: 100%;
+
+      .checkbox-component {
+        flex-shrink: 0;
+        margin-right: var(--spacing);
+
+        // The row handles clicks, so the checkbox must not toggle itself too
+        input {
+          pointer-events: none;
+        }
+      }
+    }
   }
 
   .dialog-footer {

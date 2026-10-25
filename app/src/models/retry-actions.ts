@@ -31,6 +31,7 @@ export enum RetryActionType {
   StashChanges,
   ResetAndPull,
   PopStash,
+  CherryPickToBranches,
 }
 
 /** The retriable actions and their associated data. */
@@ -72,6 +73,13 @@ export type RetryAction =
       type: RetryActionType.CherryPick
       repository: Repository
       targetBranch: Branch
+      commits: ReadonlyArray<CommitOneLine>
+      sourceBranch: Branch | null
+    }
+  | {
+      type: RetryActionType.CherryPickToBranches
+      repository: Repository
+      targetBranches: ReadonlyArray<Branch>
       commits: ReadonlyArray<CommitOneLine>
       sourceBranch: Branch | null
     }

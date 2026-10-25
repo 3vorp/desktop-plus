@@ -22,6 +22,7 @@ import { OSVersionNoLongerSupportedBanner } from './os-version-no-longer-support
 import { WorktreesEnabledBanner } from './worktrees-enabled-banner'
 import { ConfigDirMigratedBanner } from './config-dir-migrated-banner'
 import { SuccessfulSignIn } from './successful-sign-in'
+import { SuccessfulMultiBranchCherryPick } from './successful-multi-branch-cherry-pick'
 
 export function renderBanner(
   banner: Banner,
@@ -197,6 +198,15 @@ export function renderBanner(
           friendlyEndpoint={banner.friendlyEndpoint}
           onDismissed={onDismissed}
           key={'successful-sign-in'}
+        />
+      )
+    case BannerType.SuccessfulMultiBranchCherryPick:
+      return (
+        <SuccessfulMultiBranchCherryPick
+          key={'successful-multi-branch-cherry-pick'}
+          targetBranchNames={banner.targetBranchNames}
+          countCherryPicked={banner.count}
+          onDismissed={onDismissed}
         />
       )
     default:

@@ -253,6 +253,15 @@ interface ICherryPickDetails extends ISourceBranchDetails {
    * Array of commits used during the operation.
    */
   readonly commits: ReadonlyArray<CommitOneLine>
+
+  /** Set when cherry-picking to multiple branches at once */
+  readonly targetBranchQueue?: ICherryPickTargetBranchQueue
+}
+
+export interface ICherryPickTargetBranchQueue {
+  readonly remaining: ReadonlyArray<Branch>
+  readonly completed: ReadonlyArray<string>
+  readonly returnToBranch: Branch | null
 }
 
 interface IRebaseDetails extends ISourceBranchDetails {
