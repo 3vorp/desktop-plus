@@ -67,6 +67,7 @@ interface ICommitGraphSidebarProps {
   readonly allBranches: ReadonlyArray<Branch>
   readonly selectedCommitShas: ReadonlyArray<string>
   readonly onRevertCommit: (commit: Commit) => void
+  readonly onRevertCommits: (commits: ReadonlyArray<Commit>) => void
   readonly onAmendCommit: (commit: Commit, isLocalCommit: boolean) => void
   readonly onViewCommitOnGitHub: (sha: string) => void
   readonly onCompareListScrolled: (scrollTop: number) => void
@@ -830,6 +831,7 @@ export class CommitGraphSidebar extends React.Component<
         onUndoCommit={this.onUndoCommit}
         onResetToCommit={this.onResetToCommit}
         onRevertCommit={this.props.onRevertCommit}
+        onRevertCommits={this.props.onRevertCommits}
         onAmendCommit={this.props.onAmendCommit}
         onCommitsSelected={this.onCommitsSelected}
         onScroll={this.onScroll}

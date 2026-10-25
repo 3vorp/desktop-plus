@@ -53,3 +53,32 @@ export async function revertCommit(
 
   await git(args, repository.path, 'revert', opts)
 }
+
+/**
+ * Creates a new revert commit for each of the given commits, one at a time
+ * and in the order given.
+ */
+export async function revertCommits(
+  repository: Repository,
+  commits: ReadonlyArray<Commit>,
+  currentRemote: IRemote | null,
+  progressCallback?: (progress: IRevertProgress) => void
+) {
+  for (const [index, commit] of commits.entries()) {
+    try {
+      await revertCommit(repository, commit, currentRemote, progressCallback)
+    } catch (e) {
+      const notReverted = commits.slice(index + 1)
+      if (notReverted.length === 0 || !(e instanceof Error)) {
+        throw e
+      }
+
+      const notRevertedList = notReverted
+        .map(c => `${c.shortSha} ${c.summary}`)
+        .join('\n')
+      throw new Error(
+        `${e.message}\n\nThe following commits were not reverted:\n${notRevertedList}`
+      )
+    }
+  }
+}

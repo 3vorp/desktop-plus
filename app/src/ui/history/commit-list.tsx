@@ -116,6 +116,9 @@ interface ICommitListProps {
   /** Callback to fire to revert a given commit in the current repository */
   readonly onRevertCommit?: (commit: Commit) => void
 
+  /** Callback to fire to revert the given commits in the current repository. */
+  readonly onRevertCommits?: (commits: ReadonlyArray<Commit>) => void
+
   readonly onAmendCommit?: (commit: Commit, isLocalCommit: boolean) => void
 
   /** Callback to fire to open a given commit on GitHub */
@@ -1107,7 +1110,23 @@ export class CommitList extends React.Component<
         action: () => this.props.onKeyboardReorder?.(this.selectedCommits),
         enabled: this.canReorder(),
       },
+      {
+        label: __DARWIN__
+          ? `Revert Changes in ${count} Commits`
+          : `Revert changes in ${count} commits`,
+        action: this.onRevertSelectedCommits,
+        enabled:
+          this.props.onRevertCommits !== undefined &&
+          this.props.isMultiCommitOperationInProgress === false,
+      },
     ]
+  }
+
+  private onRevertSelectedCommits = () => {
+    const newestFirst = this.selectedCommits.toSorted(
+      (a, b) => this.rowForSHA(a.sha) - this.rowForSHA(b.sha)
+    )
+    this.props.onRevertCommits?.(newestFirst)
   }
 
   private onKeyboardInsertionIndexPathChanged = (indexPath: RowIndexPath) => {

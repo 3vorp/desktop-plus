@@ -52,6 +52,7 @@ import {
   checkoutPaths,
   resetPaths,
   revertCommit,
+  revertCommits,
   unstageAllFiles,
   addRemote,
   listSubmodules,
@@ -1875,6 +1876,19 @@ export class GitStore extends BaseStore {
   ): Promise<void> {
     await this.performFailableOperation(() =>
       revertCommit(repository, commit, this.currentRemote, progressCallback)
+    )
+
+    this.emitUpdate()
+  }
+
+  /** Reverts the given commits, in the order given */
+  public async revertCommits(
+    repository: Repository,
+    commits: ReadonlyArray<Commit>,
+    progressCallback?: (fetchProgress: IRevertProgress) => void
+  ): Promise<void> {
+    await this.performFailableOperation(() =>
+      revertCommits(repository, commits, this.currentRemote, progressCallback)
     )
 
     this.emitUpdate()
