@@ -801,7 +801,7 @@ jobs:
           # Copy and sign RPM packages
           find ../artifacts -type f -name "*.rpm" -exec cp {} Packages/ \;
           for rpm in Packages/*.rpm; do
-            rpm --addsign "$rpm"
+            rpmsign --addsign --rpmv4 "$rpm"
           done
 
           # Create and sign release
