@@ -106,7 +106,7 @@ echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/desktop-plus.gpg] http
 Update the package list and install:
 ```bash
 sudo apt update
-sudo apt install desktop-plus
+sudo apt install -y desktop-plus
 ```
 
 ---
@@ -132,14 +132,14 @@ Update the package list and install:
 
 ```bash
 sudo dnf check-update --refresh
-sudo dnf install desktop-plus
+sudo dnf install -y desktop-plus
 ```
 
 #### Option 2: Using [Terra](https://terrapkg.com/)
 
 Make sure you have [installed](https://docs.terrapkg.com/usage/installing/) or enabled the Terra repository. Then, run:
 ```bash
-sudo dnf install desktop-plus-bin
+sudo dnf install -y desktop-plus-bin
 ```
 
 > **Note:** The Terra package is unofficial. Use at your own risk.
@@ -166,7 +166,7 @@ Update the package list and install:
 
 ```bash
 sudo zypper refresh
-sudo zypper install desktop-plus
+sudo zypper install -y desktop-plus
 ```
 
 ---
@@ -188,7 +188,7 @@ yay -S desktop-plus-bin
 
 You can also build from source by installing `desktop-plus` or `desktop-plus-git` from the AUR.
 
-> `gnome-keyring` is required and the daemon must be launched either at login or when the X server / Wayland compositor is started. Normally this is handled by a display manager, but in other cases following the instructions found on the [Arch Wiki](https://wiki.archlinux.org/index.php/GNOME/Keyring#Using_the_keyring_outside_GNOME) will fix the issue of not being able to save login credentials.
+> A keyring (such as `gnome-keyring` or KWallet) is required, and its daemon must be launched either at login or when the X server / Wayland compositor is started. Normally this is handled by a display manager, but in other cases following the instructions found on the [Arch Wiki](https://wiki.archlinux.org/index.php/GNOME/Keyring#Using_the_keyring_outside_GNOME) will fix the issue of not being able to save login credentials.
 
 ---
 
@@ -204,7 +204,7 @@ You can also build from source by installing `desktop-plus` or `desktop-plus-git
 Simply install Desktop Plus from [Flathub](https://flathub.org/en/apps/org.desktop_plus.desktop-plus):
 
 ```bash
-flatpak install flathub org.desktop_plus.desktop-plus
+flatpak install -y flathub org.desktop_plus.desktop-plus
 ```
 
 > **NOTE:** Git hooks will run inside the Flatpak sandbox and cannot access programs installed on your system (such as version managers,
