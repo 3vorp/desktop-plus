@@ -350,6 +350,11 @@
     }
   }
 
+  .commitGraph-details {
+    display: flex;
+    align-items: center;
+  }
+
   .commitGraph-date {
     @include ellipsis;
     color: var(--text-secondary-color);

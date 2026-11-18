@@ -1,11 +1,10 @@
 import * as React from 'react'
 import classNames from 'classnames'
 import { Commit } from '../../models/commit'
-import { Branch, BranchType } from '../../models/branch'
+import { Branch } from '../../models/branch'
 import { Emoji } from '../../lib/emoji'
 import { formatDate } from '../../lib/format-date'
 import { TooltippedContent } from '../lib/tooltipped-content'
-import { TooltipDirection } from '../lib/tooltip'
 import { Octicon } from '../octicons'
 import * as octicons from '../octicons/octicons.generated'
 import { commitGraph_RowHeight, ICommitGraphRow } from './commit-graph-model'
@@ -13,12 +12,12 @@ import { Tokenizer, TokenType } from '../../lib/text-token-parser'
 import { ConventionalCommitBadge } from '../lib/conventional-commit-badge'
 import { parseConventionalCommit } from '../../lib/conventional-commits'
 import { assertNever } from '../../lib/fatal-error'
-import { getAvatarUsersForCommit, IAvatarUser } from '../../models/avatar'
+import { getAvatarUsersForCommit } from '../../models/avatar'
 import { AvatarStack } from '../lib/avatar-stack'
 import { Account } from '../../models/account'
 import { GitHubRepository } from '../../models/github-repository'
-import { Avatar } from '../lib/avatar'
 import { RelativeTime } from '../relative-time'
+import { CommitAttribution } from '../lib/commit-attribution'
 
 interface ICommitGraphCommitListItemProps {
   readonly commit: Commit
@@ -42,7 +41,6 @@ const commitGraph_LaneGap = 18
 const commitGraph_LeadingPadding = 8
 const commitGraph_MessageGap = 16
 const commitGraph_DotRadius = 5
-const commitGraph_ShortRefLabelLength = 12
 
 interface ICommitGraphSummaryProps {
   readonly className: string
@@ -100,9 +98,7 @@ export class CommitGraphCommitListItem extends React.PureComponent<ICommitGraphC
       <div className={commitClassNames}>
         {this.commitGraph_renderGraph()}
         <div className="commitGraph-commit-content">
-          <div className="commitGraph-message">
-            {this.commitGraph_renderBranchLabels()}
-            {this.commitGraph_renderCurrentCommitIndicator()}
+          <div className="info">
             <CommitGraphSummary
               className={summaryClassNames}
               emoji={this.props.emoji}
@@ -111,11 +107,15 @@ export class CommitGraphCommitListItem extends React.PureComponent<ICommitGraphC
                 this.props.showConventionalCommitBadges
               }
             />
+            <div className="description">
+              <AvatarStack users={avatarUsers} accounts={this.props.accounts} />
+              <div className="byline">
+                <CommitAttribution avatarUsers={avatarUsers} />
+                {` • `}
+                {this.commitGraph_renderCommitTime(commit.author.date)}
+              </div>
+            </div>
           </div>
-          <span className="commitGraph-date">
-            {this.commitGraph_renderCommitTime(commit.author.date)}
-          </span>
-          {this.commitGraph_renderCommitterBadge(avatarUsers)}
           {this.commitGraph_renderUnpushedIndicator()}
         </div>
       </div>
@@ -272,195 +272,6 @@ export class CommitGraphCommitListItem extends React.PureComponent<ICommitGraphC
     )
   }
 
-  private commitGraph_renderCurrentCommitIndicator() {
-    if (
-      this.props.currentBranch !== null ||
-      this.props.currentTipSha !== this.props.commit.sha
-    ) {
-      return null
-    }
-
-    return (
-      <span
-        className="commitGraph-current-commit-indicator"
-        aria-label="Currently checked out commit"
-        role="img"
-      />
-    )
-  }
-
-  private commitGraph_renderBranchLabels() {
-    const tags = this.props.commit.tags
-    const labels = this.props.branches.map(branch =>
-      this.commitGraph_renderBranchLabel(branch)
-    )
-    const refNames = [
-      ...this.props.branches.map(branch => branch.name),
-      ...tags,
-    ]
-    const className = classNames('commitGraph-ref-labels', {
-      compact: commitGraph_isCompactRefLabelGroup(refNames),
-    })
-
-    if (labels.length === 0 && tags.length === 0) {
-      return null
-    }
-
-    return (
-      <span className={className}>
-        {labels}
-        {tags.map(tag => this.commitGraph_renderTagLabel(tag))}
-      </span>
-    )
-  }
-
-  private commitGraph_renderTagLabel(tag: string) {
-    const className = classNames(
-      'commitGraph-ref-label',
-      'commitGraph-ref-tag',
-      {
-        short: commitGraph_isShortRefLabel(tag),
-      }
-    )
-
-    return (
-      <TooltippedContent
-        tagName="span"
-        className={className}
-        key={tag}
-        tooltip={tag}
-        direction={TooltipDirection.SOUTH_EAST}
-      >
-        {tag}
-      </TooltippedContent>
-    )
-  }
-
-  private commitGraph_renderBranchLabel(branch: Branch) {
-    const isCurrentBranch = branch.ref === this.props.currentBranch?.ref
-    const isRemoteBranch = branch.type !== BranchType.Local
-    const isPullRequestLabel = commitGraph_isPullRequestRefLabel(branch.name)
-    const color = this.props.branchColors.get(branch.ref)
-    const className = classNames('commitGraph-ref-label', {
-      current: isCurrentBranch,
-      remote: isRemoteBranch,
-      'pull-request': isPullRequestLabel,
-      short: commitGraph_isShortRefLabel(branch.name),
-    })
-    const content = (
-      <>
-        {!isRemoteBranch && color !== undefined ? (
-          <span
-            className="commitGraph-ref-color-swatch"
-            style={{ backgroundColor: color }}
-          />
-        ) : null}
-        {isCurrentBranch ? (
-          <span className="commitGraph-ref-current-indicator" />
-        ) : null}
-        <span className="commitGraph-ref-name">{branch.name}</span>
-      </>
-    )
-
-    if (!isPullRequestLabel) {
-      return (
-        <TooltippedContent
-          tagName="span"
-          className={className}
-          key={branch.ref}
-          tooltip={branch.name}
-          direction={TooltipDirection.SOUTH_EAST}
-        >
-          {content}
-        </TooltippedContent>
-      )
-    }
-
-    return (
-      <TooltippedContent
-        tagName="span"
-        className={className}
-        key={branch.ref}
-        tooltip={this.commitGraph_renderPullRequestLabelTooltip(branch.name)}
-        tooltipClassName="commitGraph-ref-label-tooltip"
-        direction={TooltipDirection.SOUTH_EAST}
-      >
-        {content}
-      </TooltippedContent>
-    )
-  }
-
-  private commitGraph_renderPullRequestLabelTooltip(label: string) {
-    const body = this.props.commit.body.trim()
-
-    return (
-      <div className="commitGraph-ref-label-tooltip-content">
-        <div className="commitGraph-ref-label-tooltip-label">{label}</div>
-        <div className="commitGraph-ref-label-tooltip-summary">
-          {commitGraph_getCommitSummary(this.props.commit)}
-        </div>
-        {body.length > 0 ? (
-          <div className="commitGraph-ref-label-tooltip-body">{body}</div>
-        ) : null}
-      </div>
-    )
-  }
-
-  private commitGraph_renderCommitterBadge(
-    avatarUsers: ReadonlyArray<IAvatarUser>
-  ) {
-    return (
-      <TooltippedContent
-        tagName="div"
-        className="commitGraph-committer-badge"
-        tooltip={this.commitGraph_renderCommitterTooltip(avatarUsers)}
-        direction={TooltipDirection.SOUTH_EAST}
-      >
-        <AvatarStack
-          users={avatarUsers}
-          accounts={this.props.accounts}
-          tooltip={false}
-        />
-      </TooltippedContent>
-    )
-  }
-
-  private commitGraph_renderCommitterTooltip(
-    avatarUsers: ReadonlyArray<IAvatarUser>
-  ) {
-    const absoluteDate = formatDate(this.props.commit.author.date, {
-      dateStyle: 'full',
-      timeStyle: 'short',
-    })
-
-    return (
-      <div className="commit-list-item-tooltip list-item-tooltip">
-        {avatarUsers.map((user, i) => (
-          <div className="author" key={i}>
-            <div className="label">
-              <Avatar accounts={this.props.accounts} user={user} title={null} />
-            </div>
-            <div>{commitGraph_renderExpandedAuthor(user)}</div>
-          </div>
-        ))}
-        <div>
-          <div className="label">Date: </div>
-          {absoluteDate}
-        </div>
-        {this.props.showUnpushedIndicator ? (
-          <div>
-            <div className="label">
-              <span className="unpushed-indicator">
-                <Octicon symbol={octicons.arrowUp} />
-              </span>
-            </div>
-            <div>{this.props.unpushedIndicatorTitle ?? 'Unpushed commit'}</div>
-          </div>
-        ) : null}
-      </div>
-    )
-  }
-
   private commitGraph_renderCommitTime(date: Date) {
     return this.props.preferAbsoluteDates ? (
       commitGraph_formatDate(date)
@@ -533,35 +344,4 @@ function commitGraph_renderSummaryTokens(
         return assertNever(token, `Unknown token type: ${token}`)
     }
   })
-}
-
-function commitGraph_isPullRequestRefLabel(name: string) {
-  return /(^|\/)pr[-/]\d+$/i.test(name) || /(^|\/)pull\/\d+\/head$/i.test(name)
-}
-
-function commitGraph_isShortRefLabel(name: string) {
-  return name.length <= commitGraph_ShortRefLabelLength
-}
-
-function commitGraph_isCompactRefLabelGroup(names: ReadonlyArray<string>) {
-  return names.length === 1 && commitGraph_isShortRefLabel(names[0]!)
-}
-
-function commitGraph_renderExpandedAuthor(
-  user: IAvatarUser
-): string | JSX.Element {
-  if (!user) {
-    return 'Unknown user'
-  }
-
-  if (user.name) {
-    return (
-      <>
-        <div>{user.name}</div>
-        <div>{user.email}</div>
-      </>
-    )
-  }
-
-  return user.email
 }
